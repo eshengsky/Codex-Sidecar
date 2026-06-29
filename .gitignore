@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-electron/
+.DS_Store
+*.log
+
+# Nuxt UI generated declarations
+auto-imports.d.ts
+components.d.ts
+
+# Local env files
+.env
+.env.*
