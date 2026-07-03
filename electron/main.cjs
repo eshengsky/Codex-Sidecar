@@ -7,23 +7,43 @@ const fsp = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const readline = require('node:readline')
+const {
+  configureAppDataPaths
+} = require('./app-data-paths.cjs')
+const {
+  SIDECAR_STORE_SCHEMA_VERSION,
+  createSidecarStore
+} = require('./sidecar-store.cjs')
+const {
+  contextUsageFromAppServerTokenUsage,
+  readLatestTranscriptContextUsage
+} = require('./context-usage.cjs')
+const {
+  SIDECAR_HOOK_EVENTS,
+  evaluateSidecarHookStatus
+} = require('./sidecar-hooks.cjs')
+const { version: APP_VERSION } = require('../package.json')
 
-const APP_VERSION = '0.1.0'
-const SIDECAR_SCHEMA_VERSION = 4
+configureAppDataPaths({ app, fs })
+
+const APP_REPOSITORY_URL = 'https://github.com/eshengsky/Codex-Sidecar'
 const SIDECAR_RUNTIME_SCHEMA_VERSION = 1
 const WINDOW_STATE_SCHEMA_VERSION = 2
-const SNAPSHOT_DEBOUNCE_MS = 700
-const POST_OPEN_SNAPSHOT_DELAYS_MS = [300, 1000, 2500]
+const CODEX_STORE_DEBOUNCE_MS = 700
+const CONTEXT_USAGE_TRANSCRIPT_REFRESH_GRACE_MS = 5000
+const POST_OPEN_CODEX_STORE_DELAYS_MS = [300, 1000, 2500]
 const HOOK_EVENT_PROCESS_DEBOUNCE_MS = 120
 const NATIVE_UNREAD_REFRESH_DELAY_MS = 250
 const RATE_LIMITS_BACKGROUND_REFRESH_INTERVAL_MS = 60_000
-const THREAD_SEARCH_OPEN_DELAY_MS = 700
-const THREAD_SEARCH_CLOSE_DELAY_MS = 1000
-const THREAD_CONTINUATION_SUMMARY_TIMEOUT_MS = 120_000
+const THREAD_CONTINUATION_SUMMARY_TIMEOUT_MS = 6 * 60 * 60_000
 const THREAD_CONTINUATION_TEXT_GRACE_MS = 3000
+const EXPLORATION_TURN_TIMEOUT_MS = 10 * 60_000
+const EXPLORATION_RESULT_WINDOW_SIZE = { width: 980, height: 720 }
+const EXPLORATION_RESULT_WINDOW_MIN_SIZE = { width: 680, height: 520 }
+const EXPLORATION_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'tif', 'tiff', 'bmp'])
 const THREAD_MESSAGE_SEARCH_TEXT_MAX_LENGTH = 120
-const MESSAGE_BOOKMARK_TEXT_MAX_LENGTH = 600
-const MESSAGE_BOOKMARK_META_MAX_LENGTH = 1000
+const TURN_BOOKMARK_TEXT_MAX_LENGTH = 600
+const TURN_BOOKMARK_META_MAX_LENGTH = 1000
 const WINDOW_BOUNDS_SAVE_DEBOUNCE_MS = 300
 const WINDOW_BOUNDS_APPLY_SUPPRESSION_MS = 50
 const WINDOW_POSITION_VISIBLE_SIZE = 24
@@ -34,11 +54,6 @@ const IMAGE_REFERENCE_PATTERN = /\.(?:png|jpe?g|gif|webp|heic|heif|tiff?|bmp|svg
 const MARKDOWN_HEADING_PATTERN = /^#{1,6}\s+\S/
 const HEARTBEAT_MESSAGE_PATTERN = /^<heartbeat(?:\s|>)[\s\S]*<\/heartbeat>\s*$/i
 const HEARTBEAT_INSTRUCTIONS_PATTERN = /<instructions(?:\s[^>]*)?>([\s\S]*?)<\/instructions>/i
-const ACCESSIBILITY_KEYSTROKE_CHECK_SCRIPT = `
-tell application "System Events"
-  key code 63
-end tell
-`
 const MINI_SIZE = { width: 330, height: 36 }
 const MINI_ALWAYS_ON_TOP_LEVEL_BELOW_DOCK = 'floating'
 const MINI_ALWAYS_ON_TOP_LEVEL_OVER_DOCK = 'pop-up-menu'
@@ -58,8 +73,10 @@ const FULL_MIN_SIZE = { width: 340, height: 420 }
 let mainWindow = null
 let miniWindow = null
 let popupMenuWindow = null
+const appStartedAt = Date.now()
+const explorationResultWindows = new Map()
 let codexClient = null
-let snapshotTimer = null
+let codexStoreTimer = null
 let globalStateFileWatcher = null
 let globalStateDirWatcher = null
 let nativeUnreadRefreshTimer = null
@@ -71,11 +88,13 @@ let cachedNativeUnread = null
 let cachedRateLimits = null
 let cachedRateLimitsUpdatedAt = 0
 let rateLimitsRefreshPromise = null
-let favoritesWriteQueue = Promise.resolve()
 let windowStateWriteQueue = Promise.resolve()
+let sidecarStore = null
 let windowState = null
 let currentWindowMode = 'full'
 let currentMiniOverDock = true
+let currentShowMiniTool = true
+let sidecarHookStatusRefreshPromise = null
 let popupMenuData = null
 let popupMenuPendingResult = null
 let windowBoundsSaveTimer = null
@@ -84,26 +103,34 @@ let applyingWindowBoundsTimer = null
 let miniWindowDragState = null
 const latestTurnSignalCache = new Map()
 
-const SIDECAR_HOOK_EVENTS = [
-  'UserPromptSubmit',
-  'PreToolUse',
-  'PermissionRequest',
-  'PostToolUse',
-  'Stop'
-]
+let sidecarHookStatus = {
+  ready: false,
+  issue: 'missing',
+  missingEvents: [...SIDECAR_HOOK_EVENTS],
+  untrustedEvents: [],
+  disabledEvents: [],
+  checkedAt: 0,
+  error: null
+}
 
 const RUNTIME_STATUS_VALUES = new Set(['idle', 'running', 'waiting', 'failed'])
 const RUNTIME_CORRECTION_STATUSES = new Set(['running', 'waiting', 'failed'])
 const AGENT_OUTPUT_ITEM_TYPES = new Set(['agentMessage'])
 const LANGUAGE_MODES = new Set(['auto', 'en', 'zh'])
 const THEME_MODES = new Set(['auto', 'light', 'dark'])
+const FULL_PANEL_KEYS = new Set(['threads', 'bookmarks', 'explorations', 'prompts', 'data'])
+const EXPLORATION_RUN_STATUSES = new Set(['running', 'summarizing', 'completed', 'partialFailed', 'failed'])
+const EXPLORATION_CANDIDATE_STATUSES = new Set(['pending', 'running', 'completed', 'failed'])
+const EXPLORATION_SUMMARY_STATUSES = new Set(['pending', 'running', 'completed', 'failed'])
 
 const normalizePromptString = (value, fallback = '') => typeof value === 'string' ? value : fallback
 
 const normalizeLanguageMode = value => LANGUAGE_MODES.has(value) ? value : 'auto'
 const normalizeThemeMode = value => THEME_MODES.has(value) ? value : 'auto'
 const normalizeMiniOverDock = value => typeof value === 'boolean' ? value : true
+const normalizeShowMiniTool = value => typeof value === 'boolean' ? value : true
 const normalizeShowMiniPrompts = value => typeof value === 'boolean' ? value : true
+const normalizeFullPanelKey = value => FULL_PANEL_KEYS.has(value) ? value : null
 
 const getThemeBackgroundColor = () => nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#f8fafc'
 
@@ -117,6 +144,12 @@ const applyThemeModeToNativeTheme = value => {
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.setBackgroundColor(getThemeBackgroundColor())
+  }
+
+  for (const browserWindow of explorationResultWindows.values()) {
+    if (!browserWindow.isDestroyed()) {
+      browserWindow.setBackgroundColor(getThemeBackgroundColor())
+    }
   }
 }
 
@@ -137,6 +170,7 @@ const createDefaultSidecarSettings = () => ({
   languageMode: 'auto',
   themeMode: 'auto',
   miniOverDock: true,
+  showMiniTool: true,
   showMiniPrompts: true
 })
 
@@ -151,6 +185,7 @@ const normalizeSidecarSettings = raw => {
     languageMode: normalizeLanguageMode(raw.languageMode),
     themeMode: normalizeThemeMode(raw.themeMode),
     miniOverDock: normalizeMiniOverDock(raw.miniOverDock),
+    showMiniTool: normalizeShowMiniTool(raw.showMiniTool),
     showMiniPrompts: normalizeShowMiniPrompts(raw.showMiniPrompts)
   }
 }
@@ -187,33 +222,21 @@ const normalizePromptTemplates = rawTemplates => {
     .filter(template => template && typeof template === 'object')
     .map(template => ({
       id: normalizePromptString(template.id).trim() || crypto.randomUUID(),
-      name: normalizePromptString(template.name).trim() || '未命名提示词',
+      name: normalizePromptString(template.name).trim() || '未命名指令',
       body: normalizePromptString(template.body),
       defaultPath: normalizePromptString(template.defaultPath)
     }))
 }
 
-const createDefaultPromptTemplates = () => [
-  {
-    id: crypto.randomUUID(),
-    name: '摘要当前进展',
-    body: '请总结当前对话的目标、已完成工作、关键决策、未完成事项、相关文件和下一步建议。要求简洁但足够让新对话无缝接续。',
-    defaultPath: ''
-  },
-  {
-    id: crypto.randomUUID(),
-    name: '实现前先给方案',
-    body: '请先阅读相关代码并给出实现方案、影响范围、待确认问题。除非我明确回复“开始改”，不要修改代码。',
-    defaultPath: ''
-  }
-]
+const createDefaultPromptTemplates = () => []
 
 const createDefaultSidecarData = () => ({
-  schemaVersion: SIDECAR_SCHEMA_VERSION,
+  schemaVersion: SIDECAR_STORE_SCHEMA_VERSION,
   promptTemplates: createDefaultPromptTemplates(),
   favorites: [],
   contextUsageByThread: {},
   threadLinks: [],
+  continuationResults: {},
   settings: createDefaultSidecarSettings()
 })
 
@@ -223,7 +246,7 @@ const createDefaultWindowState = () => ({
   sizesByMode: {}
 })
 
-const normalizeFavoriteString = (value, maxLength = MESSAGE_BOOKMARK_META_MAX_LENGTH) => {
+const normalizeFavoriteString = (value, maxLength = TURN_BOOKMARK_META_MAX_LENGTH) => {
   const text = typeof value === 'string' ? value.trim() : ''
 
   return text.length > maxLength ? text.slice(0, maxLength) : text
@@ -252,40 +275,71 @@ const normalizeThreadFavoriteItem = raw => {
   }
 }
 
-const normalizeMessageFavoriteItem = raw => {
+const normalizeTurnFavoriteItem = raw => {
   if (!raw || typeof raw !== 'object') {
     return null
   }
 
   const threadId = normalizeFavoriteString(raw.threadId)
-  const messageId = normalizeFavoriteString(raw.messageId)
+  const turnId = normalizeFavoriteString(raw.turnId)
   const id = normalizeFavoriteString(raw.id)
-  const preview = normalizeFavoriteString(raw.preview, MESSAGE_BOOKMARK_TEXT_MAX_LENGTH)
+  const userPreview = normalizeFavoriteString(raw.userPreview, TURN_BOOKMARK_TEXT_MAX_LENGTH)
 
-  if (!id || !threadId || !messageId || !preview) {
+  if (!id || !threadId || !turnId || !userPreview) {
     return null
   }
 
-  const index = Number.isInteger(raw.index) && raw.index > 0 ? raw.index : 0
-  const messageCreatedAt = normalizeFavoriteTimestamp(raw.messageCreatedAt)
   const createdAt = normalizeFavoriteTimestamp(raw.createdAt) || Date.now()
 
   return {
-    type: 'message',
+    type: 'turn',
     id,
     threadId,
-    messageId,
-    turnId: normalizeFavoriteString(raw.turnId),
-    itemId: normalizeFavoriteString(raw.itemId),
-    index,
-    preview,
-    searchText: normalizeFavoriteString(raw.searchText, THREAD_MESSAGE_SEARCH_TEXT_MAX_LENGTH),
-    messageCreatedAt,
+    turnId,
+    userItemId: normalizeFavoriteString(raw.userItemId),
+    userPreview,
+    userSearchText: normalizeFavoriteString(raw.userSearchText, THREAD_MESSAGE_SEARCH_TEXT_MAX_LENGTH),
+    assistantItemId: normalizeFavoriteString(raw.assistantItemId),
+    assistantPreview: normalizeFavoriteString(raw.assistantPreview, TURN_BOOKMARK_TEXT_MAX_LENGTH),
+    turnCreatedAt: normalizeFavoriteTimestamp(raw.turnCreatedAt),
     createdAt,
-    threadTitle: normalizeFavoriteString(raw.threadTitle, MESSAGE_BOOKMARK_TEXT_MAX_LENGTH),
-    codexTitle: normalizeFavoriteString(raw.codexTitle, MESSAGE_BOOKMARK_TEXT_MAX_LENGTH),
+    threadTitle: normalizeFavoriteString(raw.threadTitle, TURN_BOOKMARK_TEXT_MAX_LENGTH),
+    codexTitle: normalizeFavoriteString(raw.codexTitle, TURN_BOOKMARK_TEXT_MAX_LENGTH),
     cwd: normalizeFavoriteString(raw.cwd),
-    projectName: normalizeFavoriteString(raw.projectName, MESSAGE_BOOKMARK_TEXT_MAX_LENGTH)
+    projectName: normalizeFavoriteString(raw.projectName, TURN_BOOKMARK_TEXT_MAX_LENGTH)
+  }
+}
+
+const normalizeLegacyMessageFavoriteItem = raw => {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const threadId = normalizeFavoriteString(raw.threadId)
+  const turnId = normalizeFavoriteString(raw.turnId)
+  const userItemId = normalizeFavoriteString(raw.itemId)
+  const userPreview = normalizeFavoriteString(raw.preview, TURN_BOOKMARK_TEXT_MAX_LENGTH)
+
+  if (!threadId || !turnId || !userPreview) {
+    return null
+  }
+
+  return {
+    type: 'turn',
+    id: `${threadId}:${turnId}`,
+    threadId,
+    turnId,
+    userItemId,
+    userPreview,
+    userSearchText: normalizeFavoriteString(raw.searchText, THREAD_MESSAGE_SEARCH_TEXT_MAX_LENGTH),
+    assistantItemId: '',
+    assistantPreview: '',
+    turnCreatedAt: normalizeFavoriteTimestamp(raw.messageCreatedAt),
+    createdAt: normalizeFavoriteTimestamp(raw.createdAt) || Date.now(),
+    threadTitle: normalizeFavoriteString(raw.threadTitle, TURN_BOOKMARK_TEXT_MAX_LENGTH),
+    codexTitle: normalizeFavoriteString(raw.codexTitle, TURN_BOOKMARK_TEXT_MAX_LENGTH),
+    cwd: normalizeFavoriteString(raw.cwd),
+    projectName: normalizeFavoriteString(raw.projectName, TURN_BOOKMARK_TEXT_MAX_LENGTH)
   }
 }
 
@@ -298,8 +352,12 @@ const normalizeFavoriteItem = raw => {
     return normalizeThreadFavoriteItem(raw)
   }
 
+  if (raw.type === 'turn') {
+    return normalizeTurnFavoriteItem(raw)
+  }
+
   if (raw.type === 'message') {
-    return normalizeMessageFavoriteItem(raw)
+    return normalizeLegacyMessageFavoriteItem(raw)
   }
 
   return null
@@ -337,13 +395,14 @@ const normalizeSidecarData = raw => {
   const hasPromptTemplates = Array.isArray(raw.promptTemplates)
 
   return {
-    schemaVersion: SIDECAR_SCHEMA_VERSION,
+    schemaVersion: SIDECAR_STORE_SCHEMA_VERSION,
     promptTemplates: hasPromptTemplates
       ? normalizePromptTemplates(raw.promptTemplates)
       : fallback.promptTemplates,
     favorites: normalizeFavoriteItems(Array.isArray(raw.favorites) ? raw.favorites : []),
     contextUsageByThread: raw.contextUsageByThread && typeof raw.contextUsageByThread === 'object' ? raw.contextUsageByThread : {},
     threadLinks: Array.isArray(raw.threadLinks) ? raw.threadLinks : [],
+    continuationResults: raw.continuationResults && typeof raw.continuationResults === 'object' ? raw.continuationResults : fallback.continuationResults,
     settings: normalizeSidecarSettings(raw.settings)
   }
 }
@@ -423,9 +482,17 @@ const normalizeWindowState = raw => {
   }
 }
 
-const getSidecarDataPath = () => path.join(app.getPath('userData'), 'sidecar-data.json')
+const getSidecarStorePath = () => path.join(app.getPath('userData'), 'sidecar.sqlite')
 
-const getWindowStatePath = () => path.join(app.getPath('userData'), 'window-state.json')
+const getExplorationAttachmentsDir = runId => path.join(app.getPath('userData'), 'exploration-attachments', runId)
+
+const getSidecarStore = () => {
+  if (!sidecarStore) {
+    sidecarStore = createSidecarStore(getSidecarStorePath())
+  }
+
+  return sidecarStore
+}
 
 const readJsonFile = async filePath => {
   const contents = await fsp.readFile(filePath, 'utf8')
@@ -450,12 +517,8 @@ const getRuntimeStatePath = () => path.join(app.getPath('userData'), 'runtime-st
 
 const readWindowState = async () => {
   try {
-    return normalizeWindowState(await readJsonFile(getWindowStatePath()))
+    return normalizeWindowState(getSidecarStore().getWindowState())
   } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return createDefaultWindowState()
-    }
-
     return createDefaultWindowState()
   }
 }
@@ -464,7 +527,7 @@ const saveWindowState = state => {
   const normalized = normalizeWindowState(state)
   const operation = windowStateWriteQueue
     .catch(() => undefined)
-    .then(() => writeJsonAtomic(getWindowStatePath(), normalized))
+    .then(() => getSidecarStore().saveWindowState(normalized))
 
   windowState = normalized
   windowStateWriteQueue = operation.then(() => undefined, () => undefined)
@@ -528,57 +591,144 @@ const saveRuntimeState = async state => {
   return normalized
 }
 
-const readSidecarData = async () => {
-  const filePath = getSidecarDataPath()
+const readSidecarData = async () => getSidecarStore().getSidecarData()
 
-  try {
-    return normalizeSidecarData(await readJsonFile(filePath))
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      const initial = createDefaultSidecarData()
-      await writeJsonAtomic(filePath, initial)
-      return initial
-    }
+const saveSidecarData = async data => {
+  return getSidecarStore().replaceSidecarData(normalizeSidecarData(data))
+}
 
-    throw error
+const normalizeExplorationString = (value, maxLength = 20000) => normalizePromptString(value).slice(0, maxLength)
+
+const normalizeExplorationTimestamp = value => Number.isFinite(value) && value > 0 ? value : Date.now()
+
+const normalizeNullableTimestamp = value => Number.isFinite(value) && value > 0 ? value : null
+
+const normalizeExplorationImage = raw => {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const id = normalizeExplorationString(raw.id, 120).trim()
+  const imagePath = normalizeExplorationString(raw.path, 4000).trim()
+
+  if (!id || !imagePath) {
+    return null
+  }
+
+  return {
+    id,
+    name: normalizeExplorationString(raw.name, 240).trim() || path.basename(imagePath),
+    path: imagePath,
+    createdAt: normalizeExplorationTimestamp(raw.createdAt)
   }
 }
 
-const saveSidecarData = async data => {
-  const normalized = normalizeSidecarData(data)
-  await writeJsonAtomic(getSidecarDataPath(), normalized)
-  return normalized
+const normalizeExplorationCandidate = (raw, index = 0) => {
+  const now = Date.now()
+  const normalizedIndex = Number.isInteger(raw?.index) && raw.index >= 0 ? raw.index : index
+  const id = normalizeExplorationString(raw?.id, 120).trim() || `candidate-${normalizedIndex + 1}`
+  const status = EXPLORATION_CANDIDATE_STATUSES.has(raw?.status) ? raw.status : 'pending'
+
+  return {
+    id,
+    index: normalizedIndex,
+    threadId: normalizeExplorationString(raw?.threadId, 240).trim() || null,
+    turnId: normalizeExplorationString(raw?.turnId, 240).trim() || null,
+    status,
+    output: normalizeExplorationString(raw?.output, 1_000_000),
+    error: normalizeExplorationString(raw?.error, 4000).trim() || null,
+    startedAt: normalizeNullableTimestamp(raw?.startedAt),
+    completedAt: normalizeNullableTimestamp(raw?.completedAt || (status === 'completed' || status === 'failed' ? now : null))
+  }
 }
 
-const updateSidecarData = async updater => {
-  const current = await readSidecarData()
-  const next = normalizeSidecarData(await updater(current))
-  await saveSidecarData(next)
-  return next
-}
-
-const createSnapshotSidecarData = data => ({
-  ...data,
-  favorites: []
+const createDefaultExplorationSummary = () => ({
+  threadId: null,
+  turnId: null,
+  status: 'pending',
+  output: '',
+  error: null,
+  startedAt: null,
+  completedAt: null
 })
 
-const updateFavoritesData = updater => {
-  const operation = favoritesWriteQueue
-    .catch(() => undefined)
-    .then(async () => {
-      const current = await readSidecarData()
-      const nextFavorites = normalizeFavoriteItems(await updater(current.favorites))
-      const nextData = await saveSidecarData({
-        ...current,
-        favorites: nextFavorites
-      })
+const normalizeExplorationSummary = raw => {
+  if (!raw || typeof raw !== 'object') {
+    return createDefaultExplorationSummary()
+  }
 
-      return nextData.favorites
-    })
+  const status = EXPLORATION_SUMMARY_STATUSES.has(raw.status) ? raw.status : 'pending'
 
-  favoritesWriteQueue = operation.then(() => undefined, () => undefined)
+  return {
+    threadId: normalizeExplorationString(raw.threadId, 240).trim() || null,
+    turnId: normalizeExplorationString(raw.turnId, 240).trim() || null,
+    status,
+    output: normalizeExplorationString(raw.output, 1_000_000),
+    error: normalizeExplorationString(raw.error, 4000).trim() || null,
+    startedAt: normalizeNullableTimestamp(raw.startedAt),
+    completedAt: normalizeNullableTimestamp(raw.completedAt)
+  }
+}
 
-  return operation
+const normalizeExplorationRun = raw => {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+
+  const id = normalizeExplorationString(raw.id, 120).trim()
+
+  if (!id) {
+    return null
+  }
+
+  const prompt = normalizeExplorationString(raw.prompt, 200000)
+  const images = Array.isArray(raw.images)
+    ? raw.images.map(normalizeExplorationImage).filter(Boolean)
+    : []
+  const candidates = Array.isArray(raw.candidates)
+    ? raw.candidates.map(normalizeExplorationCandidate)
+    : []
+  const concurrency = Math.min(Math.max(Number(raw.concurrency) || candidates.length || 2, 2), 5)
+  const status = EXPLORATION_RUN_STATUSES.has(raw.status) ? raw.status : 'running'
+
+  return {
+    id,
+    title: normalizeExplorationString(raw.title, 120).trim() || prompt.replace(/\s+/g, ' ').trim().slice(0, 36) || '图片优选',
+    prompt,
+    images,
+    concurrency,
+    sourceThreadId: normalizeExplorationString(raw.sourceThreadId, 240).trim() || null,
+    sourceThreadTitle: normalizeExplorationString(raw.sourceThreadTitle, 240).trim() || null,
+    sourceThreadCwd: normalizeExplorationString(raw.sourceThreadCwd, 4000).trim() || null,
+    status,
+    createdAt: normalizeExplorationTimestamp(raw.createdAt),
+    updatedAt: normalizeExplorationTimestamp(raw.updatedAt),
+    completedAt: normalizeNullableTimestamp(raw.completedAt),
+    candidates,
+    summary: normalizeExplorationSummary(raw.summary)
+  }
+}
+
+const updateExplorationRun = async (runId, updater) => {
+  const currentRun = getSidecarStore().getExplorationRun(runId)
+
+  if (!currentRun) {
+    return null
+  }
+
+  const nextRun = getSidecarStore().saveExplorationRun(normalizeExplorationRun({
+    ...currentRun,
+    ...(updater(currentRun) || {}),
+    id: currentRun.id,
+    updatedAt: Date.now()
+  }) || currentRun)
+
+  sendExplorationsChanged()
+  return nextRun
+}
+
+const getExplorationRun = async runId => {
+  return getSidecarStore().getExplorationRun(runId)
 }
 
 const resolveCodexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
@@ -631,6 +781,23 @@ const ensureHookCaptureScript = async () => {
 }
 
 const createSidecarHookCommand = eventName => `${shellQuote(getHookCaptureScriptPath())} ${eventName}`
+
+const getExpectedSidecarHooks = () => SIDECAR_HOOK_EVENTS.map(eventName => ({
+  eventName,
+  command: createSidecarHookCommand(eventName)
+}))
+
+const normalizeHookStatusError = error => error instanceof Error ? error.message : error ? String(error) : null
+
+const createSidecarHookErrorStatus = error => ({
+  ready: false,
+  issue: 'missing',
+  missingEvents: [...SIDECAR_HOOK_EVENTS],
+  untrustedEvents: [],
+  disabledEvents: [],
+  checkedAt: Date.now(),
+  error: normalizeHookStatusError(error)
+})
 
 const normalizeHooksConfig = raw => {
   if (raw == null) {
@@ -785,7 +952,7 @@ const scheduleNativeUnreadRefresh = () => {
     nativeUnreadRefreshTimer = null
     cachedNativeUnread = readNativeUnreadState()
     watchNativeUnreadFile()
-    scheduleSnapshotBroadcast()
+    scheduleCodexStoreBroadcast()
   }, NATIVE_UNREAD_REFRESH_DELAY_MS)
 }
 
@@ -1013,7 +1180,7 @@ const createCodexRpcClient = onNotification => {
       return
     }
 
-    // The ready-to-show snapshot and renderer's initial refresh can arrive at
+    // The ready-to-show CodexStore and renderer's initial refresh can arrive at
     // the same time; gate connection startup so they share one app-server.
     if (!connectPromise) {
       connectPromise = connectOnce().finally(() => {
@@ -1069,7 +1236,7 @@ const getCodexClient = async () => {
     })
 
     codexClient.events.on('close', () => {
-      scheduleSnapshotBroadcast()
+      scheduleCodexStoreBroadcast()
     })
   }
 
@@ -1077,26 +1244,22 @@ const getCodexClient = async () => {
   return codexClient
 }
 
+const persistContextUsage = usage => {
+  if (!usage?.threadId) {
+    return null
+  }
+
+  return getSidecarStore().setContextUsage(usage.threadId, usage)
+}
+
 const handleCodexNotification = async message => {
   if (message.method === 'thread/tokenUsage/updated') {
     const threadId = message.params?.threadId
     const usage = message.params?.tokenUsage
+    const contextUsage = contextUsageFromAppServerTokenUsage(threadId, usage)
 
-    if (threadId && usage?.modelContextWindow && usage.total?.totalTokens) {
-      const percent = Math.min(100, Math.round((usage.total.totalTokens / usage.modelContextWindow) * 100))
-
-      await updateSidecarData(data => ({
-        ...data,
-        contextUsageByThread: {
-          ...data.contextUsageByThread,
-          [threadId]: {
-            percent,
-            totalTokens: usage.total.totalTokens,
-            modelContextWindow: usage.modelContextWindow,
-            updatedAt: Date.now()
-          }
-        }
-      }))
+    if (contextUsage) {
+      persistContextUsage(contextUsage)
     }
   }
 
@@ -1105,7 +1268,7 @@ const handleCodexNotification = async message => {
     return
   }
 
-  scheduleSnapshotBroadcast()
+  scheduleCodexStoreBroadcast()
 }
 
 const listAllThreads = async client => {
@@ -1302,16 +1465,40 @@ const epochSecondsToMs = value => {
   return typeof value === 'number' && Number.isFinite(value) ? value * 1000 : null
 }
 
-const readThreadUserMessages = async (client, threadId) => {
+const extractAssistantFinalText = items => {
+  if (!Array.isArray(items)) {
+    return { text: '', itemId: '' }
+  }
+
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+
+    if (item?.type === 'agentMessage' && item.phase === 'final_answer' && typeof item.text === 'string') {
+      const text = normalizeMessageWhitespace(item.text)
+
+      if (text) {
+        return {
+          text,
+          itemId: typeof item.id === 'string' ? item.id : ''
+        }
+      }
+    }
+  }
+
+  return { text: '', itemId: '' }
+}
+
+const readThreadTurnPreviews = async (client, threadId) => {
   const response = await client.request('thread/read', {
     threadId,
     includeTurns: true
   }, 15000)
   const turns = Array.isArray(response?.thread?.turns) ? response.thread.turns : []
-  const messages = []
+  const turnPreviews = []
 
   for (const turn of turns) {
     const items = Array.isArray(turn?.items) ? turn.items : []
+    const assistantFinal = extractAssistantFinalText(items)
 
     for (const item of items) {
       if (item?.type !== 'userMessage') {
@@ -1325,19 +1512,24 @@ const readThreadUserMessages = async (client, threadId) => {
         continue
       }
 
-      messages.push({
-        id: `${turn.id || 'turn'}:${item.id || messages.length}`,
-        turnId: typeof turn.id === 'string' ? turn.id : '',
-        itemId: typeof item.id === 'string' ? item.id : '',
-        preview: preview || IMAGE_MESSAGE_PREVIEW,
-        searchText: createSearchText(text),
+      const turnId = typeof turn.id === 'string' && turn.id ? turn.id : `turn-${turnPreviews.length + 1}`
+
+      turnPreviews.push({
+        id: `${turnId}:${item.id || turnPreviews.length}`,
+        turnId,
+        userItemId: typeof item.id === 'string' ? item.id : '',
+        userPreview: preview || IMAGE_MESSAGE_PREVIEW,
+        userSearchText: createSearchText(text),
+        assistantItemId: assistantFinal.itemId,
+        assistantPreview: assistantFinal.text,
         createdAt: epochSecondsToMs(turn.startedAt ?? turn.completedAt),
-        index: messages.length + 1
+        index: turnPreviews.length + 1
       })
+      break
     }
   }
 
-  return messages
+  return turnPreviews
 }
 
 const getLastUserMessagePreview = turns => {
@@ -1667,6 +1859,19 @@ const applyHookEventToRuntimeState = (state, fileEventName, payload, updatedAt) 
   return true
 }
 
+const persistContextUsageFromHookPayload = async (fileEventName, payload) => {
+  const meta = extractHookRuntimeMeta(payload)
+  const eventName = normalizeHookEventName(meta.eventName || fileEventName)
+
+  if (eventName !== 'Stop' || !meta.sessionId || !meta.transcriptPath) {
+    return false
+  }
+
+  const usage = await readLatestTranscriptContextUsage(meta.transcriptPath, meta.sessionId)
+
+  return Boolean(persistContextUsage(usage))
+}
+
 const readHookEventFiles = async () => {
   try {
     const names = await fsp.readdir(getHookEventsDir())
@@ -1699,7 +1904,8 @@ const processHookEvents = async () => {
       }
 
       const state = await readRuntimeState()
-      let changed = false
+      let runtimeChanged = false
+      let shouldBroadcast = false
       const processedFiles = []
 
       for (const fileName of files) {
@@ -1708,7 +1914,11 @@ const processHookEvents = async () => {
 
         try {
           const payload = JSON.parse(await fsp.readFile(filePath, 'utf8'))
-          changed = applyHookEventToRuntimeState(state, fileEventName, payload, Date.now()) || changed
+          const hookRuntimeChanged = applyHookEventToRuntimeState(state, fileEventName, payload, Date.now())
+          const contextUsageChanged = await persistContextUsageFromHookPayload(fileEventName, payload)
+
+          runtimeChanged = hookRuntimeChanged || runtimeChanged
+          shouldBroadcast = hookRuntimeChanged || contextUsageChanged || shouldBroadcast
         } catch {
           // Invalid hook payloads are removed from the queue so one bad file
           // cannot block later Codex lifecycle events.
@@ -1717,9 +1927,12 @@ const processHookEvents = async () => {
         processedFiles.push(filePath)
       }
 
-      if (changed) {
+      if (runtimeChanged) {
         await saveRuntimeState(state)
-        scheduleSnapshotBroadcast()
+      }
+
+      if (shouldBroadcast) {
+        scheduleCodexStoreBroadcast()
       }
 
       await Promise.all(processedFiles.map(filePath => fsp.rm(filePath, { force: true })))
@@ -1941,14 +2154,14 @@ const normalizeRateLimitWindow = (label, limitWindow) => {
 }
 
 const normalizeRateLimits = response => {
-  const snapshots = Object.values(response?.rateLimitsByLimitId || {})
-  const primarySnapshot = snapshots.find(snapshot => snapshot?.limitId === 'codex') || response?.rateLimits || snapshots[0] || null
+  const rateLimitEntries = Object.values(response?.rateLimitsByLimitId || {})
+  const primaryRateLimit = rateLimitEntries.find(entry => entry?.limitId === 'codex') || response?.rateLimits || rateLimitEntries[0] || null
 
   return {
-    limitId: primarySnapshot?.limitId || null,
-    limitName: primarySnapshot?.limitName || null,
-    primary: normalizeRateLimitWindow('5 小时', primarySnapshot?.primary),
-    secondary: normalizeRateLimitWindow('1 周', primarySnapshot?.secondary)
+    limitId: primaryRateLimit?.limitId || null,
+    limitName: primaryRateLimit?.limitName || null,
+    primary: normalizeRateLimitWindow('5 小时', primaryRateLimit?.primary),
+    secondary: normalizeRateLimitWindow('1 周', primaryRateLimit?.secondary)
   }
 }
 
@@ -1979,17 +2192,55 @@ const refreshRateLimitsInBackground = (client, { force = false } = {}) => {
 
   void refreshRateLimits(client)
     .then(() => {
-      scheduleSnapshotBroadcast()
+      scheduleCodexStoreBroadcast()
     })
     .catch(() => {
       // Rate limits are auxiliary UI data; failed refreshes should not block thread state.
     })
 }
 
-const createSnapshot = async () => {
+const getContextUsageForThread = (contextUsageByThread, thread) => {
+  return contextUsageByThread[thread.id] || (thread.sessionId ? contextUsageByThread[thread.sessionId] : null) || null
+}
+
+const shouldReadRecentTranscriptContextUsage = thread => {
+  const updatedAt = epochSecondsToMs(thread.updatedAt)
+
+  return Boolean(
+    thread.id &&
+    thread.path &&
+    updatedAt &&
+    updatedAt >= appStartedAt - CONTEXT_USAGE_TRANSCRIPT_REFRESH_GRACE_MS
+  )
+}
+
+const hydrateRecentContextUsageFromTranscripts = async (threads, contextUsageByThread) => {
+  const candidates = threads.filter(thread => {
+    return !getContextUsageForThread(contextUsageByThread, thread) && shouldReadRecentTranscriptContextUsage(thread)
+  })
+
+  if (candidates.length === 0) {
+    return
+  }
+
+  const entries = await mapLimit(candidates, 4, async thread => {
+    const usage = await readLatestTranscriptContextUsage(thread.path, thread.id)
+    const persistedUsage = persistContextUsage(usage)
+
+    return persistedUsage ? [thread.id, persistedUsage] : null
+  })
+
+  for (const entry of entries) {
+    if (entry) {
+      contextUsageByThread[entry[0]] = entry[1]
+    }
+  }
+}
+
+const createCodexStore = async () => {
   await processHookEvents()
 
-  const sidecarData = await readSidecarData()
+  const contextUsageByThread = getSidecarStore().getContextUsageByThread()
   let runtimeState = await readRuntimeState()
   const nativeUnread = getNativeUnreadState()
   const unreadSet = new Set(nativeUnread.available ? nativeUnread.ids : [])
@@ -1997,6 +2248,7 @@ const createSnapshot = async () => {
   const threads = await listAllThreads(client)
 
   refreshRateLimitsInBackground(client)
+  await hydrateRecentContextUsageFromTranscripts(threads, contextUsageByThread)
 
   runtimeState = await reconcileRuntimeStateWithTranscript(runtimeState)
   const statusKindByThreadId = new Map()
@@ -2044,7 +2296,7 @@ const createSnapshot = async () => {
       statusKind,
       latestTurnSignal
     })
-    const contextUsage = sidecarData.contextUsageByThread[thread.id] || null
+    const contextUsage = getContextUsageForThread(contextUsageByThread, thread)
     const title = thread.name || thread.preview || '未命名对话'
 
     return {
@@ -2082,23 +2334,14 @@ const createSnapshot = async () => {
       error: nativeUnread.error
     },
     rateLimits: cachedRateLimits,
-    threads: summaries,
-    sidecarData: createSnapshotSidecarData(sidecarData)
+    threads: summaries
   }
 }
 
-const safeSnapshot = async () => {
+const safeCodexStore = async () => {
   try {
-    return await createSnapshot()
+    return await createCodexStore()
   } catch (error) {
-    let sidecarData
-
-    try {
-      sidecarData = await readSidecarData()
-    } catch {
-      sidecarData = createDefaultSidecarData()
-    }
-
     return {
       generatedAt: Date.now(),
       connection: codexClient?.getStatus() || {
@@ -2111,47 +2354,89 @@ const safeSnapshot = async () => {
       },
       rateLimits: cachedRateLimits,
       threads: [],
-      sidecarData: createSnapshotSidecarData(sidecarData),
       error: error instanceof Error ? error.message : String(error)
     }
   }
 }
 
-function scheduleSnapshotBroadcast() {
+function scheduleCodexStoreBroadcast() {
   const hasTargetWindow = [mainWindow, miniWindow].some(browserWindow => browserWindow && !browserWindow.isDestroyed())
 
   if (!hasTargetWindow) {
     return
   }
 
-  if (snapshotTimer) {
-    clearTimeout(snapshotTimer)
+  if (codexStoreTimer) {
+    clearTimeout(codexStoreTimer)
   }
 
-  snapshotTimer = setTimeout(async () => {
-    snapshotTimer = null
-    await sendSnapshot()
-  }, SNAPSHOT_DEBOUNCE_MS)
+  codexStoreTimer = setTimeout(async () => {
+    codexStoreTimer = null
+    await sendCodexStore()
+  }, CODEX_STORE_DEBOUNCE_MS)
 }
 
-async function sendSnapshot() {
+async function sendCodexStore() {
   const targetWindows = [mainWindow, miniWindow].filter(browserWindow => browserWindow && !browserWindow.isDestroyed())
 
   if (targetWindows.length === 0) {
     return
   }
 
-  const snapshot = await safeSnapshot()
+  const codexStore = await safeCodexStore()
 
   for (const targetWindow of targetWindows) {
-    targetWindow.webContents.send('sidecar:snapshot', snapshot)
+    targetWindow.webContents.send('sidecar:codexStore', codexStore)
   }
 }
 
-const schedulePostOpenSnapshotBroadcast = () => {
-  for (const delayMs of POST_OPEN_SNAPSHOT_DELAYS_MS) {
+async function sendSidecarDataChanged(sidecarData) {
+  const targetWindows = [mainWindow, miniWindow, ...explorationResultWindows.values()]
+    .filter(browserWindow => browserWindow && !browserWindow.isDestroyed())
+
+  if (targetWindows.length === 0) {
+    return
+  }
+
+  const nextSidecarData = sidecarData || await readSidecarData()
+
+  for (const targetWindow of targetWindows) {
+    targetWindow.webContents.send('sidecar:sidecarDataChanged', nextSidecarData)
+  }
+}
+
+function sendSidecarHookStatusChanged(status = sidecarHookStatus) {
+  const targetWindows = [mainWindow, miniWindow, ...explorationResultWindows.values()]
+    .filter(browserWindow => browserWindow && !browserWindow.isDestroyed())
+
+  if (targetWindows.length === 0) {
+    return
+  }
+
+  for (const targetWindow of targetWindows) {
+    targetWindow.webContents.send('sidecar:hookStatusChanged', status)
+  }
+}
+
+function sendExplorationsChanged() {
+  const targetWindows = [mainWindow, miniWindow, ...explorationResultWindows.values()]
+    .filter(browserWindow => browserWindow && !browserWindow.isDestroyed())
+
+  if (targetWindows.length === 0) {
+    return
+  }
+
+  const explorations = getSidecarStore().listExplorationRuns()
+
+  for (const targetWindow of targetWindows) {
+    targetWindow.webContents.send('sidecar:explorationsChanged', explorations)
+  }
+}
+
+const schedulePostOpenCodexStoreBroadcast = () => {
+  for (const delayMs of POST_OPEN_CODEX_STORE_DELAYS_MS) {
     setTimeout(() => {
-      void sendSnapshot()
+      void sendCodexStore()
     }, delayMs)
   }
 }
@@ -2163,6 +2448,10 @@ const windowMode = mode => {
 
   if (mode === 'popup-menu') {
     return 'popup-menu'
+  }
+
+  if (mode === 'exploration-result') {
+    return 'exploration-result'
   }
 
   return 'full'
@@ -2184,7 +2473,7 @@ const getWindowSize = (mode, area) => {
 
 const createDefaultWindowBounds = (mode, sizeOverride = null) => {
   const display = screen.getPrimaryDisplay()
-  const area = display.workArea
+  const area = mode === 'mini' ? display.bounds : display.workArea
   const margin = mode === 'mini' ? 0 : 18
   const size = sizeOverride || getWindowSize(mode, area)
 
@@ -2366,7 +2655,7 @@ const clampBoundsInsideArea = (bounds, area) => ({
 const getMiniDragWindow = event => {
   const targetWindow = BrowserWindow.fromWebContents(event.sender)
 
-  if (!targetWindow || targetWindow.isDestroyed() || targetWindow !== miniWindow || currentWindowMode !== 'mini') {
+  if (!targetWindow || targetWindow.isDestroyed() || targetWindow !== miniWindow) {
     return null
   }
 
@@ -2534,6 +2823,10 @@ const getWindowModeForBrowserWindow = browserWindow => {
     return 'popup-menu'
   }
 
+  if (browserWindow && [...explorationResultWindows.values()].some(window => window === browserWindow)) {
+    return 'exploration-result'
+  }
+
   return 'full'
 }
 
@@ -2547,21 +2840,88 @@ const sendWindowModeToWindow = (browserWindow, mode) => {
   browserWindow.webContents.send('sidecar:windowMode', windowMode(mode))
 }
 
-const loadRenderer = (browserWindow, mode) => {
+const sendSelectPanelToWindow = (browserWindow, activePanel) => {
+  const normalizedPanel = normalizeFullPanelKey(activePanel)
+
+  if (!normalizedPanel || !browserWindow || browserWindow.isDestroyed()) {
+    return
+  }
+
+  browserWindow.webContents.send('sidecar:selectPanel', normalizedPanel)
+}
+
+const loadRenderer = (browserWindow, mode, extraQuery = {}) => {
   const nextMode = windowMode(mode)
 
   if (process.env.VITE_DEV_SERVER_URL) {
     const rendererUrl = new URL(process.env.VITE_DEV_SERVER_URL)
     rendererUrl.searchParams.set('windowMode', nextMode)
+    for (const [key, value] of Object.entries(extraQuery)) {
+      if (value != null) {
+        rendererUrl.searchParams.set(key, String(value))
+      }
+    }
     browserWindow.loadURL(rendererUrl.toString())
     return
   }
 
   browserWindow.loadFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'), {
     query: {
-      windowMode: nextMode
+      windowMode: nextMode,
+      ...Object.fromEntries(Object.entries(extraQuery).filter(([, value]) => value != null).map(([key, value]) => [key, String(value)]))
     }
   })
+}
+
+const createExplorationResultWindow = explorationId => {
+  const normalizedId = normalizeExplorationString(explorationId, 120).trim()
+
+  if (!normalizedId) {
+    throw new Error('explorationId is required.')
+  }
+
+  const existingWindow = explorationResultWindows.get(normalizedId)
+
+  if (existingWindow && !existingWindow.isDestroyed()) {
+    existingWindow.show()
+    existingWindow.focus()
+    return existingWindow
+  }
+
+  const resultWindow = new BrowserWindow({
+    width: EXPLORATION_RESULT_WINDOW_SIZE.width,
+    height: EXPLORATION_RESULT_WINDOW_SIZE.height,
+    minWidth: EXPLORATION_RESULT_WINDOW_MIN_SIZE.width,
+    minHeight: EXPLORATION_RESULT_WINDOW_MIN_SIZE.height,
+    resizable: true,
+    title: '优选结果',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 12 },
+    backgroundColor: getThemeBackgroundColor(),
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  explorationResultWindows.set(normalizedId, resultWindow)
+
+  resultWindow.once('ready-to-show', () => {
+    if (!resultWindow.isDestroyed()) {
+      resultWindow.show()
+    }
+  })
+
+  resultWindow.once('closed', () => {
+    explorationResultWindows.delete(normalizedId)
+  })
+
+  loadRenderer(resultWindow, 'exploration-result', { explorationId: normalizedId })
+
+  return resultWindow
 }
 
 const createWindow = () => {
@@ -2604,7 +2964,7 @@ const createWindow = () => {
   mainWindow.once('ready-to-show', () => {
     positionWindow(mainWindow, 'full')
     mainWindow.show()
-    scheduleSnapshotBroadcast()
+    scheduleCodexStoreBroadcast()
   })
 
   loadRenderer(mainWindow, 'full')
@@ -2623,7 +2983,7 @@ const createMiniWindow = () => {
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
-    hasShadow: false,
+    hasShadow: true,
     resizable: true,
     minWidth: MINI_SIZE.width,
     minHeight: MINI_SIZE.height,
@@ -2680,11 +3040,11 @@ const createMiniWindow = () => {
     positionWindow(miniWindow, 'mini')
     sendWindowModeToWindow(miniWindow, 'mini')
 
-    if (currentWindowMode === 'mini') {
+    if (currentShowMiniTool) {
       miniWindow.showInactive()
     }
 
-    void sendSnapshot()
+    void sendCodexStore()
   })
 
   miniWindow.once('closed', () => {
@@ -2844,19 +3204,13 @@ const showPopupMenu = async (sourceWindow, options) => {
   return resultPromise
 }
 
-const showFullWindow = () => {
+const showFullWindow = (options = {}) => {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    return false
+    createWindow()
   }
 
   miniWindowDragState = null
   currentWindowMode = 'full'
-
-  if (miniWindow && !miniWindow.isDestroyed()) {
-    flushWindowBoundsSave(miniWindow, 'mini')
-    miniWindow.hide()
-    sendWindowModeToWindow(miniWindow, 'mini')
-  }
 
   if (process.platform === 'darwin' && typeof mainWindow.setWindowButtonVisibility === 'function') {
     mainWindow.setWindowButtonVisibility(true)
@@ -2867,26 +3221,15 @@ const showFullWindow = () => {
   sendWindowModeToWindow(mainWindow, 'full')
   mainWindow.show()
   mainWindow.focus()
-  void sendSnapshot()
+  sendSelectPanelToWindow(mainWindow, options.activePanel)
+  void sendCodexStore()
 
   return true
 }
 
-const showMiniWindow = () => {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return false
-  }
-
+const showMiniToolWindow = () => {
   miniWindowDragState = null
-  flushWindowBoundsSave(mainWindow, 'full')
-  currentWindowMode = 'mini'
-
-  if (process.platform === 'darwin' && typeof mainWindow.setWindowButtonVisibility === 'function') {
-    mainWindow.setWindowButtonVisibility(true)
-  }
-
-  sendWindowModeToWindow(mainWindow, 'full')
-  mainWindow.hide()
+  currentShowMiniTool = true
 
   const targetMiniWindow = createMiniWindow()
 
@@ -2895,15 +3238,71 @@ const showMiniWindow = () => {
 
   if (!targetMiniWindow.webContents.isLoading()) {
     targetMiniWindow.showInactive()
-    void sendSnapshot()
+    void sendCodexStore()
   }
 
   return true
 }
 
+const hideMiniToolWindow = () => {
+  miniWindowDragState = null
+  currentShowMiniTool = false
+
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    flushWindowBoundsSave(miniWindow, 'mini')
+    miniWindow.hide()
+    sendWindowModeToWindow(miniWindow, 'mini')
+  }
+
+  return true
+}
+
+const applyShowMiniTool = value => normalizeShowMiniTool(value) && sidecarHookStatus.ready
+  ? showMiniToolWindow()
+  : hideMiniToolWindow()
+
+const applyStoredMiniToolVisibility = () => {
+  const settings = getSidecarStore().getSidecarData().settings
+  applyShowMiniTool(settings.showMiniTool)
+}
+
+const refreshSidecarHookStatus = async (options = {}) => {
+  if (sidecarHookStatusRefreshPromise) {
+    return sidecarHookStatusRefreshPromise
+  }
+
+  sidecarHookStatusRefreshPromise = (async () => {
+    try {
+      const client = await getCodexClient()
+      const response = await client.request('hooks/list', { cwds: [] }, 12000)
+
+      sidecarHookStatus = {
+        ...evaluateSidecarHookStatus(response, getExpectedSidecarHooks()),
+        error: null
+      }
+    } catch (error) {
+      sidecarHookStatus = createSidecarHookErrorStatus(error)
+    }
+
+    if (options.applyMini !== false) {
+      applyStoredMiniToolVisibility()
+    }
+
+    if (options.broadcast !== false) {
+      sendSidecarHookStatusChanged(sidecarHookStatus)
+    }
+
+    return sidecarHookStatus
+  })().finally(() => {
+    sidecarHookStatusRefreshPromise = null
+  })
+
+  return sidecarHookStatusRefreshPromise
+}
+
 const openCodexThread = async threadId => {
   await shell.openExternal(`codex://threads/${encodeURIComponent(threadId)}`)
-  schedulePostOpenSnapshotBroadcast()
+  schedulePostOpenCodexStoreBroadcast()
 }
 
 const openNewCodexThread = async options => {
@@ -2922,12 +3321,8 @@ const openNewCodexThread = async options => {
   }
 
   await shell.openExternal(`codex://new?${params.toString()}`)
-  schedulePostOpenSnapshotBroadcast()
+  schedulePostOpenCodexStoreBroadcast()
 }
-
-const delay = ms => new Promise(resolve => {
-  setTimeout(resolve, ms)
-})
 
 const createTextUserInput = text => ({
   type: 'text',
@@ -2936,76 +3331,172 @@ const createTextUserInput = text => ({
 })
 
 const createThreadContinuationSummaryPrompt = ({ threadId, cwd }) => [
-  '你正在为一个新的 Codex 对话生成“接续摘要”。新的对话将无法访问当前旧对话的完整历史，只能看到你本次输出的内容。你的任务不是写聊天纪要，而是生成一个足够完整、准确、可执行的 handoff 上下文包，让新的 Codex 能在同一项目中继续工作。',
+  '你正在为一个新的 Codex 对话生成“接续摘要”。新的对话将无法访问当前旧对话的完整历史，只能看到你本次输出的内容。',
   '',
-  `原线程 ID：${threadId}`,
-  `当前工作目录：${cwd || '未知'}`,
-  `生成时间：${new Date().toISOString()}`,
+  '你的任务不是写聊天纪要，也不是做历史归档，而是生成一个面向下一轮行动的 handoff 上下文包。摘要必须帮助新的 Codex 快速理解：用户最终要做什么、哪些结论已经被确认、哪些旧判断已经被纠正、哪些事情还没完成、继续时必须避开什么坑。',
   '',
-  '要求：',
+  '元信息：',
+  `- 原线程 ID：${threadId}（仅作追溯线索；不要假设新对话一定能读取旧线程）`,
+  `- 当前工作目录：${cwd || '未知'}`,
+  `- 生成时间：${new Date().toISOString()}`,
   '',
-  '1. 只基于当前对话中已经出现、已经确认或已经验证的信息总结。',
-  '2. 不要编造文件、接口、命令结果、用户意图或实现状态。',
-  '3. 如果某件事不确定，明确标注“未验证”或“不确定”。',
-  '4. 忽略重复寒暄、无关讨论、冗长日志和中间 tool 输出；只保留会影响后续工作的事实。',
-  '5. 对代码任务，必须保留当前目标、用户约束、已做改动、涉及文件、已验证现象、失败报错、排查结论、未完成事项和下一步建议。',
-  '6. 不要说“我无法访问旧对话”。你正在当前旧对话里总结。',
-  '7. 不要调用工具、不要修改文件、不要启动命令；本次只输出摘要。',
-  '8. 输出 Markdown，不要加开场白，不要加解释，不要向用户提问。',
-  '9. 摘要要详细，但避免流水账。优先准确和可接续，其次才是简短。',
+  '核心原则：',
   '',
-  '请严格按以下结构输出：',
+  '1. 先从最新的用户请求和最后几轮对话判断“当前真实目标”，再回溯只保留与该目标相关的历史。',
+  '2. 只基于当前对话中已经出现、已经确认或已经验证的信息总结。',
+  '3. 不要编造文件、接口、命令结果、用户意图或实现状态。',
+  '4. 如果某件事不确定，明确标注“未验证”或“不确定”。',
+  '5. 明确区分“最终结论”和“过程中被推翻的旧结论”。如果用户纠正过旧判断，必须写清楚旧判断哪里错、新结论是什么。',
+  '6. 不要把已废弃的旧方案写成建议。已废弃内容只能放在“不要沿用的旧结论”里。',
+  '7. 摘要应服务下一步行动，不要流水账式记录每一轮聊天。',
+  '8. 忽略寒暄、重复说明、冗长日志、无关 tool 输出，只保留会影响后续判断和实现的事实。',
+  '9. 不要要求新对话按固定文件清单阅读代码。可以给“旧对话曾定位到的模块线索”，但必须提醒新对话按当前需求和当前仓库重新确认。',
+  '10. 对代码任务，必须保留用户约束、当前目标、最终技术决策、已完成改动、未完成事项、风险边界、验证状态。',
+  '11. 不要说“我无法访问旧对话”。你正在当前旧对话里总结。',
+  '12. 不要调用工具、不要修改文件、不要启动命令；本次只输出摘要。',
+  '13. 输出 Markdown，不要加开场白，不要加解释，不要向用户提问。',
+  '14. 摘要要准确、可接续、可执行。详细程度服从“是否影响后续工作”，不要为了完整而堆历史。',
+  '15. 不要记录旧对话中某一时刻的临时仓库状态，例如 git status 为空，除非它直接影响下一步；新对话应重新确认当前仓库状态。',
+  '16. “已完成事项”只能表达为旧对话中已完成或曾修改过；不要暗示新对话无需按当前仓库重新确认。',
+  '17. “已知定位线索”最多写 6-8 条，优先写模块职责、数据流、事件和接口关系；不要展开成长文件清单。',
+  '18. “用户约束与偏好”只记录旧对话中用户额外强调、或与当前任务直接相关的约束；不要复制 AGENTS.md、系统/开发者指令或仓库通用规范。',
+  '19. 摘要输出语言必须根据用户明确要求、最新真实任务、历史对话上下文和目标产物自动判断；不要因为本摘要生成提示词是中文就默认输出中文。',
+  '20. 先判断目标回答语言，并在摘要的 Response Language 小节写出判断结果。Use the English template below as the canonical structure.',
+  '21. If the target response language is not English, translate every heading and all body text from the English canonical template into the target language. Do not keep English headings unless the target response language is English.',
   '',
-  '# 接续摘要',
+  '请严格按以下 canonical structure 输出。下面的小节说明也属于模板约束；如果目标语言不是英文，应一起翻译为目标语言后输出：',
   '',
-  '## 当前目标',
-  '说明用户最终想完成什么。不要只写最近一句话，要写当前工作的真实目标。',
+  '# Continuation Summary',
   '',
-  '## 用户约束与偏好',
-  '列出后续必须遵守的规则，包括是否允许改代码、是否允许启动服务、包管理器、验证方式、UI/交互约束、沟通风格等。',
+  '## Response Language',
+  'State the target response language and the evidence used to infer it. Prefer explicit user instructions first, then the latest substantive user request, conversation context, and the target artifact language.',
   '',
-  '## 项目与运行环境',
-  '列出已知的仓库路径、技术栈、相关进程/API/工具、当前日期或其他会影响判断的环境信息。',
+  '## Current Goal',
+  'Explain the user’s latest real goal in 2-5 sentences.',
   '',
-  '## 已确认事实',
-  '列出已经通过代码、文档、运行结果或用户反馈确认的事实。每条尽量写明证据来源，例如“用户反馈”“本地代码”“官方文档”“运行报错”。',
+  'Requirements:',
+  '- Prioritize the latest user request.',
+  '- The current request to generate this continuation summary is not the current goal; do not include the summary-generation task, no-tool requirement, no-file-change requirement, or other temporary instructions that only apply to this summary turn.',
+  '- If the last few turns are about reviewing or adjusting continuation summaries, trace back to the latest substantive non-continuation, non-summary-review task and use that as the current goal.',
+  '- If the current task is only “review the plan, do not edit code yet”, say so explicitly.',
+  '- If the user has already said “can edit / go ahead / start changing”, say so explicitly.',
+  '- Do not let older broad goals override the latest goal.',
   '',
-  '## 关键决策',
-  '列出已经做出的产品或技术决策，以及为什么这样选。包括被排除的方案。',
+  '## User Constraints and Preferences',
+  'Only list user constraints or preferences from the old conversation that are directly relevant to the current task.',
   '',
-  '## 当前实现状态',
-  '说明已经改了什么、功能现在做到哪一步、哪些行为用户已经验证过、哪些还没有验证。',
+  'Requirements:',
+  '- Do not copy AGENTS.md, system instructions, developer instructions, or generic repo rules.',
+  '- Do not include rules that the new environment will already inherit automatically.',
+  '- If the user explicitly emphasized a general rule and it directly affects the current task, keep it.',
+  '- Prioritize user-corrected boundaries, preferred decision style, and whether code edits are currently authorized.',
+  '- Validation status, skipped commands, and manual verification expectations belong in Verification Status, not here.',
+  '- Keep only constraints that affect next actions.',
   '',
-  '## 相关文件与位置',
-  '列出后续最可能需要阅读或修改的文件。能给出函数名、组件名、IPC 名、事件名或大致行号时一并写出。',
+  '## Final Conclusions',
+  'List final conclusions that the old conversation settled on.',
   '',
-  '## 已尝试与报错',
-  '列出重要的失败现象、错误信息、排查过程和当前结论。不要粘贴长日志，只保留关键错误文本和含义。',
+  'Requirements:',
+  '- For each item, include conclusion, reason, and evidence source.',
+  '- Evidence sources can be user confirmation, static code inspection, historical commit comparison, command output, API response, or unverified.',
+  '- If multiple features are involved, use a table.',
+  '- Do not mix in intermediate conclusions that were later overturned.',
   '',
-  '## 未完成事项',
-  '列出还没做、还需要确认、还需要实现或还需要验证的事项。',
+  '## Discarded Prior Conclusions',
+  'List conclusions that appeared during the conversation but were later corrected by the user or evidence.',
   '',
-  '## 风险与注意事项',
-  '列出容易误改、容易误判、可能破坏现有行为的点。明确哪些是事实，哪些只是推测。',
+  'For each item, state:',
+  '- What the old conclusion was.',
+  '- Why it was wrong.',
+  '- What final conclusion should be followed instead.',
+  '- Only include prior conclusions that would directly affect the next step; fold minor historical corrections into Risks and Notes.',
   '',
-  '## 建议下一步',
-  '给新 Codex 的具体行动建议。按优先级写，避免泛泛而谈。',
+  'If there are no discarded conclusions, write “None”.',
   '',
-  '## 给新对话的启动指令',
-  '写一段可以直接放进新 Codex 对话开头的指令，要求新 Codex把本摘要当作初始上下文；不假设能访问旧对话；先阅读相关文件再判断；遵守用户约束；如果用户没有明确要求修改代码，先给方案，不要擅自改。'
+  '## Completed Work',
+  'List code changes, plan confirmations, or verified findings that were actually completed in the old conversation.',
+  '',
+  'Requirements:',
+  '- Distinguish code changes from planning or investigation only.',
+  '- Say “completed or changed in the old conversation”; do not imply the new conversation can skip checking the current repository.',
+  '- File paths can be background hints, but do not require the new conversation to read specific files first.',
+  '- If only static verification was done, say that runtime verification was not done.',
+  '- Do not include planned work as completed work.',
+  '',
+  '## Open Items',
+  'List remaining work, confirmations, or verifications.',
+  '',
+  'Requirements:',
+  '- Order by priority.',
+  '- For each item, explain why it remains open.',
+  '- If user confirmation is needed, state exactly what needs confirmation.',
+  '- Do not list loosely related possibilities as required work.',
+  '',
+  '## Known Navigation Hints',
+  'List modules, components, APIs, events, or data-flow hints found in the old conversation.',
+  '',
+  'Requirements:',
+  '- This is navigation guidance, not a fixed reading checklist.',
+  '- Keep at most 6-8 items; merge extras into data flows or responsibilities.',
+  '- Do not write “must read these files”.',
+  '- Do not include long file lists.',
+  '- Remind the new conversation to re-check current code based on the current request and current repository state.',
+  '- Prefer module responsibilities, data flow, events, and API names over file dumps.',
+  '',
+  '## Key Interfaces and Data Contracts',
+  'List interfaces, params, return values, field meanings, and user-confirmed contracts needed for next work.',
+  '',
+  'Requirements:',
+  '- Mark what was user-confirmed, code-inferred, or still needs verification.',
+  '- If docs and actual API responses conflicted, state that clearly.',
+  '- Call out easy-to-miss endpoint paths, field names, or enum values.',
+  '- Only include interfaces, params, fields, or contracts that the next step will directly call, modify, or depend on.',
+  '',
+  '## Risks and Notes',
+  'List points that are easy to mis-edit, misjudge, or break.',
+  '',
+  'Requirements:',
+  '- Emphasize issues the user corrected.',
+  '- State what must not be accidentally changed by the current task.',
+  '- For shared components, services, or styles, state the affected scope.',
+  '- Avoid generic risk statements.',
+  '',
+  '## Verification Status',
+  'List verification that was done and verification that was not done.',
+  '',
+  'Requirements:',
+  '- Include concrete commands or verification methods.',
+  '- If build, lint, tsc, or dev server was not run, say so.',
+  '- If the user plans to verify in the UI, state the key scenarios they need to check.',
+  '- Do not claim anything is working if it was not verified.',
+  '',
+  '## Suggested Next Step',
+  'Give the new Codex instance tactical guidance for continuing.',
+  '',
+  'Requirements:',
+  '- Base this on Current Goal and Open Items.',
+  '- Do not mechanically list files.',
+  '- Do not expand scope.',
+  '- If the user did not explicitly authorize code edits, suggest a plan or confirmation question first.',
+  '- If the user already said to edit, suggest the smallest implementation and verification path.',
+  '- Open Items lists concrete pending work; Suggested Next Step gives strategy without repeating the full implementation list.'
 ].join('\n')
 
 const createThreadContinuationPrompt = summary => [
   '以下是从旧 Codex 对话生成的接续摘要。请把它作为本对话的初始上下文。你不能假设自己还能访问旧对话完整历史；如果需要确认事实，请读取当前仓库文件或让用户提供证据。',
+  '如果摘要中包含原线程 ID，它只作为追溯线索；不要依赖一定能按 ID 读取旧对话原文。',
+  '请根据用户明确要求、接续摘要、原始任务、历史对话上下文和目标产物自动判断后续回答语言；不要根据本段接续说明的语言决定回答语言。',
   '',
   '<接续摘要>',
   summary.trim(),
   '</接续摘要>',
   '',
-  '请先基于摘要确认你理解当前状态，并等待我的下一步指令。除非我明确要求修改代码，否则不要直接改文件。'
+  '请先完整理解以上接续摘要，把它作为当前对话上下文；如果本条消息没有新的明确任务，请等待用户下一步指令。'
 ].join('\n')
 
-const createThreadTurnCompletionWaiter = (client, threadId) => {
+const createThreadTurnCompletionWaiter = (client, threadId, options = {}) => {
+  const label = normalizePromptString(options.label, '接续摘要')
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : THREAD_CONTINUATION_SUMMARY_TIMEOUT_MS
   const states = new Map()
   let targetTurnId = null
   let resolveWait = null
@@ -3073,7 +3564,7 @@ const createThreadTurnCompletionWaiter = (client, threadId) => {
     }
 
     if (turn.status === 'failed' || turn.status === 'interrupted') {
-      fail(new Error(`接续摘要未完成：${turn.status}`))
+      fail(new Error(`${label}未完成：${turn.status}`))
       return
     }
 
@@ -3090,7 +3581,7 @@ const createThreadTurnCompletionWaiter = (client, threadId) => {
 
     if (!textGraceTimer) {
       textGraceTimer = setTimeout(() => {
-        fail(new Error('接续摘要已完成，但没有返回可用文本。'))
+        fail(new Error(`${label}已完成，但没有返回可用文本。`))
       }, THREAD_CONTINUATION_TEXT_GRACE_MS)
     }
   }
@@ -3133,8 +3624,8 @@ const createThreadTurnCompletionWaiter = (client, threadId) => {
       rejectWait = reject
 
       timeoutTimer = setTimeout(() => {
-        fail(new Error('接续摘要等待超时。'))
-      }, THREAD_CONTINUATION_SUMMARY_TIMEOUT_MS)
+        fail(new Error(`${label}等待超时。`))
+      }, timeoutMs)
 
       maybeFinish(turnId)
     }),
@@ -3200,86 +3691,493 @@ const runThreadContinuationSummary = async (threadId, cwd) => {
   }
 }
 
-const runAppleScript = script => new Promise((resolve, reject) => {
-  const child = spawn('osascript', ['-e', script], {
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
-  let stdout = ''
-  let stderr = ''
+const createLocalImageUserInput = imagePath => ({
+  type: 'localImage',
+  path: imagePath
+})
 
-  child.stdout.on('data', chunk => {
-    stdout = `${stdout}${chunk.toString('utf8')}`.slice(-2000)
-  })
+const createExplorationTitle = (prompt, images) => {
+  const compactPrompt = normalizeExplorationString(prompt, 120).replace(/\s+/g, ' ').trim()
 
-  child.stderr.on('data', chunk => {
-    stderr = `${stderr}${chunk.toString('utf8')}`.slice(-2000)
-  })
+  if (compactPrompt) {
+    return compactPrompt.slice(0, 40)
+  }
 
-  child.on('error', reject)
-  child.on('exit', code => {
-    if (code === 0) {
-      resolve(stdout.trim())
+  return images.length > 0 ? '图片优选' : '新优选'
+}
+
+const normalizeExplorationConcurrency = value => Math.min(Math.max(Number(value) || 2, 2), 5)
+
+const normalizeImagePathInput = value => {
+  const imagePath = normalizeExplorationString(value, 4000).trim()
+
+  if (!imagePath || !path.isAbsolute(imagePath)) {
+    return null
+  }
+
+  const extension = path.extname(imagePath).replace('.', '').toLowerCase()
+
+  return EXPLORATION_IMAGE_EXTENSIONS.has(extension) ? imagePath : null
+}
+
+const copyExplorationImages = async (runId, imagePaths) => {
+  const normalizedPaths = Array.isArray(imagePaths)
+    ? imagePaths.map(normalizeImagePathInput).filter(Boolean)
+    : []
+
+  if (normalizedPaths.length === 0) {
+    return []
+  }
+
+  const targetDir = getExplorationAttachmentsDir(runId)
+  await fsp.mkdir(targetDir, { recursive: true })
+
+  const copiedImages = []
+
+  for (const [index, sourcePath] of normalizedPaths.entries()) {
+    const extension = path.extname(sourcePath)
+    const baseName = path.basename(sourcePath, extension).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80) || `image-${index + 1}`
+    const targetPath = path.join(targetDir, `${index + 1}-${baseName}${extension.toLowerCase()}`)
+
+    await fsp.copyFile(sourcePath, targetPath)
+    copiedImages.push({
+      id: crypto.randomUUID(),
+      name: path.basename(sourcePath),
+      path: targetPath,
+      createdAt: Date.now()
+    })
+  }
+
+  return copiedImages
+}
+
+const createExplorationCandidatePrompt = (run, candidate) => [
+  '你正在参与一次 Codex Sidecar 的“只读并发优选”。这是多个候选答案之一，后续会把所有候选交给另一个临时对话做对比总结。',
+  `候选编号：${candidate.index + 1} / ${run.concurrency}`,
+  '',
+  '硬性要求：',
+  '1. 只能做只读分析。不要修改文件，不要创建提交，不要启动长期服务。',
+  '2. 如果需要读取本地文件或运行命令，只能用于验证事实；不要执行会改变仓库或系统状态的命令。',
+  '3. 如果缺少上下文或证据不足，明确标注“未验证”或“需验证”，不要编造。',
+  '4. 输出要独立完整，便于后续 judge 对比。请直接给结论、关键依据、风险、建议。',
+  '5. 请独立选择分析角度，不要假设其他候选会覆盖同样内容；优先寻找容易被单次回答遗漏的风险、约束或替代方案。',
+  '6. 输出语言必须根据用户明确要求、原始任务、历史对话上下文和目标产物自动判断；不要根据本内部提示词、候选标签或 Sidecar UI 语言决定。',
+  '',
+  run.sourceThreadId
+    ? `本候选基于已 fork 的历史对话上下文：${run.sourceThreadTitle || run.sourceThreadId}`
+    : '本候选没有历史对话上下文；请只基于本次输入和可只读验证的信息回答。',
+  '',
+  '<用户任务>',
+  run.prompt.trim() || '用户只上传了图片，请分析图片并给出有用结论。',
+  '</用户任务>'
+].join('\n')
+
+const createExplorationSummaryPrompt = run => {
+  const completedCandidates = run.candidates.filter(candidate => candidate.status === 'completed' && candidate.output.trim())
+  const failedCandidates = run.candidates.filter(candidate => candidate.status === 'failed')
+
+  return [
+    '你正在担任 Codex Sidecar 并发优选的 judge。你拥有与候选阶段相同的历史上下文和原始输入，下面还会提供同一任务的多个候选回答作为参考材料。请结合原始上下文、原始输入和候选回答，生成一个最佳最终回答。',
+    '',
+    '要求：',
+    '1. 候选回答是参考材料，不是唯一信息来源；不要简单投票。',
+    '2. 优先采纳符合历史上下文、原始问题、原始图片和可验证证据的内容。',
+    '3. 如果候选之间冲突，或候选与原始上下文/图片冲突，说明取舍理由；证据不足时明确标注不确定。',
+    '4. 可以补充候选遗漏但历史上下文或原始输入中已经明确的信息；不要编造无法从上下文、输入或候选中支持的信息。',
+    '5. 最终回答要可以直接复制给用户使用。不要提及“候选 1/2/3”这样的内部流程，除非需要说明分歧。',
+    '6. 最终回答语言必须根据用户明确要求、原始任务、历史对话上下文和目标产物自动判断；不要根据本内部提示词、候选标签、候选材料的语言或 Sidecar UI 语言决定。',
+    '7. 候选材料的语言不是最终回答语言依据；如果候选语言和原始任务/历史上下文语言冲突，以原始任务和历史上下文为准。',
+    '',
+    '<原始任务>',
+    run.prompt.trim() || '用户只上传了图片，请分析图片并给出有用结论。',
+    '</原始任务>',
+    '',
+    '<上下文>',
+    run.sourceThreadId
+      ? `候选基于历史对话 fork：${run.sourceThreadTitle || run.sourceThreadId}`
+      : '候选没有历史对话上下文。',
+    '</上下文>',
+    '',
+    '<候选回答>',
+    ...completedCandidates.map(candidate => [
+      `## 候选 ${candidate.index + 1}`,
+      candidate.output.trim()
+    ].join('\n')),
+    '</候选回答>',
+    '',
+    failedCandidates.length > 0
+      ? [
+          '<失败候选>',
+          ...failedCandidates.map(candidate => `候选 ${candidate.index + 1}: ${candidate.error || '未知错误'}`),
+          '</失败候选>'
+        ].join('\n')
+      : ''
+  ].filter(Boolean).join('\n')
+}
+
+const createExplorationInput = (run, candidate) => [
+  createTextUserInput(createExplorationCandidatePrompt(run, candidate)),
+  ...run.images.map(image => createLocalImageUserInput(image.path))
+]
+
+const createExplorationSummaryInput = run => [
+  createTextUserInput(createExplorationSummaryPrompt(run)),
+  ...run.images.map(image => createLocalImageUserInput(image.path))
+]
+
+const createReadOnlyThreadParams = cwd => ({
+  ephemeral: true,
+  approvalPolicy: 'never',
+  sandbox: 'read-only',
+  ...(cwd ? { cwd } : {})
+})
+
+const createReadOnlyTurnParams = (threadId, input, cwd = null) => ({
+  threadId,
+  input,
+  approvalPolicy: 'never',
+  sandboxPolicy: {
+    type: 'readOnly',
+    networkAccess: false
+  },
+  ...(cwd ? { cwd } : {})
+})
+
+const startExplorationThread = async (client, run, label = '优选线程') => {
+  const cwd = run.sourceThreadCwd && path.isAbsolute(run.sourceThreadCwd) ? run.sourceThreadCwd : null
+
+  if (run.sourceThreadId) {
+    const forkResponse = await client.request('thread/fork', {
+      threadId: run.sourceThreadId,
+      ...createReadOnlyThreadParams(cwd)
+    }, 30000)
+    const forkThreadId = forkResponse?.thread?.id
+
+    if (!forkThreadId) {
+      throw new Error(`${label}未能创建 fork 对话。`)
+    }
+
+    return {
+      threadId: forkThreadId,
+      cwd
+    }
+  }
+
+  const startResponse = await client.request('thread/start', createReadOnlyThreadParams(null), 30000)
+  const threadId = startResponse?.thread?.id
+
+  if (!threadId) {
+    throw new Error(`${label}未能创建临时对话。`)
+  }
+
+  return {
+    threadId,
+    cwd: null
+  }
+}
+
+const runExplorationCandidate = async (runId, candidateId) => {
+  const client = await getCodexClient()
+  let currentRun = await getExplorationRun(runId)
+  const candidate = currentRun?.candidates.find(item => item.id === candidateId)
+
+  if (!currentRun || !candidate) {
+    throw new Error('优选记录不存在。')
+  }
+
+  await updateExplorationRun(runId, run => ({
+    candidates: run.candidates.map(item => item.id === candidateId
+      ? {
+          ...item,
+          status: 'running',
+          startedAt: Date.now(),
+          error: null
+        }
+      : item)
+  }))
+
+  let completionWaiter = null
+
+  try {
+    currentRun = await getExplorationRun(runId)
+
+    if (!currentRun) {
+      throw new Error('优选记录不存在。')
+    }
+
+    const thread = await startExplorationThread(client, currentRun, '优选候选')
+
+    await updateExplorationRun(runId, run => ({
+      candidates: run.candidates.map(item => item.id === candidateId
+        ? {
+            ...item,
+            threadId: thread.threadId
+          }
+        : item)
+    }))
+
+    completionWaiter = createThreadTurnCompletionWaiter(client, thread.threadId, {
+      label: `优选候选 ${candidate.index + 1}`,
+      timeoutMs: EXPLORATION_TURN_TIMEOUT_MS
+    })
+
+    const turnResponse = await client.request('turn/start', createReadOnlyTurnParams(
+      thread.threadId,
+      createExplorationInput(currentRun, candidate),
+      thread.cwd
+    ), 30000)
+    const turnId = turnResponse?.turn?.id
+
+    if (!turnId) {
+      throw new Error('优选候选未能启动 turn。')
+    }
+
+    await updateExplorationRun(runId, run => ({
+      candidates: run.candidates.map(item => item.id === candidateId
+        ? {
+            ...item,
+            turnId
+          }
+        : item)
+    }))
+
+    const completion = await completionWaiter.waitFor(turnId)
+
+    await updateExplorationRun(runId, run => ({
+      candidates: run.candidates.map(item => item.id === candidateId
+        ? {
+            ...item,
+            status: 'completed',
+            output: completion.agentText,
+            error: null,
+            completedAt: Date.now()
+          }
+        : item)
+    }))
+  } catch (error) {
+    await updateExplorationRun(runId, run => ({
+      candidates: run.candidates.map(item => item.id === candidateId
+        ? {
+            ...item,
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+            completedAt: Date.now()
+          }
+        : item)
+    }))
+  } finally {
+    completionWaiter?.dispose()
+  }
+}
+
+const runExplorationSummary = async runId => {
+  const client = await getCodexClient()
+  const run = await getExplorationRun(runId)
+
+  if (!run) {
+    throw new Error('优选记录不存在。')
+  }
+
+  const completedCandidates = run.candidates.filter(candidate => candidate.status === 'completed' && candidate.output.trim())
+
+  if (completedCandidates.length === 0) {
+    await updateExplorationRun(runId, currentRun => ({
+      status: 'failed',
+      completedAt: Date.now(),
+      summary: {
+        ...currentRun.summary,
+        status: 'failed',
+        error: '所有候选都失败，无法生成总结。',
+        completedAt: Date.now()
+      }
+    }))
+    return
+  }
+
+  await updateExplorationRun(runId, currentRun => ({
+    status: 'summarizing',
+    summary: {
+      ...currentRun.summary,
+      status: 'running',
+      error: null,
+      startedAt: Date.now()
+    }
+  }))
+
+  let completionWaiter = null
+
+  try {
+    const latestRun = await getExplorationRun(runId)
+
+    if (!latestRun) {
+      throw new Error('优选记录不存在。')
+    }
+
+    const thread = await startExplorationThread(client, latestRun, '优选总结')
+
+    await updateExplorationRun(runId, currentRun => ({
+      summary: {
+        ...currentRun.summary,
+        threadId: thread.threadId
+      }
+    }))
+
+    completionWaiter = createThreadTurnCompletionWaiter(client, thread.threadId, {
+      label: '优选总结',
+      timeoutMs: EXPLORATION_TURN_TIMEOUT_MS
+    })
+
+    const turnResponse = await client.request('turn/start', createReadOnlyTurnParams(
+      thread.threadId,
+      createExplorationSummaryInput(latestRun),
+      thread.cwd
+    ), 30000)
+    const turnId = turnResponse?.turn?.id
+
+    if (!turnId) {
+      throw new Error('优选总结未能启动 turn。')
+    }
+
+    await updateExplorationRun(runId, currentRun => ({
+      summary: {
+        ...currentRun.summary,
+        turnId
+      }
+    }))
+
+    const completion = await completionWaiter.waitFor(turnId)
+    const failedCount = latestRun.candidates.filter(candidate => candidate.status === 'failed').length
+
+    await updateExplorationRun(runId, currentRun => ({
+      status: failedCount > 0 ? 'partialFailed' : 'completed',
+      completedAt: Date.now(),
+      summary: {
+        ...currentRun.summary,
+        status: 'completed',
+        output: completion.agentText,
+        error: null,
+        completedAt: Date.now()
+      }
+    }))
+  } catch (error) {
+    await updateExplorationRun(runId, currentRun => ({
+      status: 'failed',
+      completedAt: Date.now(),
+      summary: {
+        ...currentRun.summary,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+        completedAt: Date.now()
+      }
+    }))
+  } finally {
+    completionWaiter?.dispose()
+  }
+}
+
+const runExploration = async runId => {
+  try {
+    const run = await getExplorationRun(runId)
+
+    if (!run) {
       return
     }
 
-    reject(new Error(stderr.trim() || `osascript exited with code ${code}.`))
-  })
-})
-
-const checkAccessibilityPermission = async () => {
-  if (process.platform !== 'darwin') {
-    return {
-      granted: false,
-      error: '对话内自动搜索当前只支持 macOS。'
-    }
-  }
-
-  try {
-    // Exercise the same TCC path used by the real search flow. The global
-    // Accessibility flag can disagree with whether osascript can actually send keys.
-    await runAppleScript(ACCESSIBILITY_KEYSTROKE_CHECK_SCRIPT)
-
-    return {
-      granted: true,
-      error: null
-    }
+    await Promise.all(run.candidates.map(candidate => runExplorationCandidate(runId, candidate.id)))
+    await runExplorationSummary(runId)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-
-    return {
-      granted: false,
-      error: `当前 /usr/bin/osascript 无法发送按键：${message} 请在系统设置的“隐私与安全性 / 辅助功能”中删除 osascript 后重新添加，并重启 Sidecar。`
-    }
+    await updateExplorationRun(runId, currentRun => ({
+      status: 'failed',
+      completedAt: Date.now(),
+      summary: {
+        ...currentRun.summary,
+        status: currentRun.summary.status === 'completed' ? 'completed' : 'failed',
+        error: currentRun.summary.output ? currentRun.summary.error : error instanceof Error ? error.message : String(error),
+        completedAt: Date.now()
+      }
+    }))
   }
 }
 
-const searchCodexCurrentThread = async searchText => {
-  if (process.platform !== 'darwin') {
-    throw new Error('对话内自动搜索当前只支持 macOS。')
+const createExplorationRun = async request => {
+  const prompt = normalizeExplorationString(request?.prompt, 200000).trim()
+  const concurrency = normalizeExplorationConcurrency(request?.concurrency)
+  const sourceThreadId = normalizeExplorationString(request?.sourceThreadId, 240).trim() || null
+  const imagePaths = Array.isArray(request?.imagePaths) ? request.imagePaths : []
+
+  if (!prompt && imagePaths.length === 0) {
+    throw new Error('优选内容不能为空。')
   }
 
-  clipboard.writeText(String(searchText || ''))
+  const client = await getCodexClient()
+  const runId = crypto.randomUUID()
+  const sourceThread = sourceThreadId
+    ? (await listAllThreads(client)).find(thread => thread.id === sourceThreadId) || null
+    : null
 
-  await runAppleScript(`
-tell application id "com.openai.codex" to activate
-delay 0.15
-tell application "System Events"
-  key code 53
-  delay 0.05
-  keystroke "f" using command down
-  delay 0.05
-  keystroke "a" using command down
-  delay 0.03
-  keystroke "v" using command down
-  delay ${THREAD_SEARCH_CLOSE_DELAY_MS / 1000}
-  key code 53
-end tell
-`)
+  if (sourceThreadId && !sourceThread) {
+    throw new Error('选择的历史对话不存在或已不可用。')
+  }
+
+  const images = await copyExplorationImages(runId, imagePaths)
+  const now = Date.now()
+  const candidates = Array.from({ length: concurrency }, (_, index) => ({
+    id: crypto.randomUUID(),
+    index,
+    threadId: null,
+    turnId: null,
+    status: 'pending',
+    output: '',
+    error: null,
+    startedAt: null,
+    completedAt: null
+  }))
+  const run = normalizeExplorationRun({
+    id: runId,
+    title: createExplorationTitle(prompt, images),
+    prompt,
+    images,
+    concurrency,
+    sourceThreadId: sourceThread?.id || null,
+    sourceThreadTitle: sourceThread ? (sourceThread.name || sourceThread.preview || null) : null,
+    sourceThreadCwd: sourceThread?.cwd || null,
+    status: 'running',
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+    candidates,
+    summary: createDefaultExplorationSummary()
+  })
+
+  const savedRun = getSidecarStore().saveExplorationRun(run)
+
+  sendExplorationsChanged()
+  void runExploration(savedRun.id)
+
+  return savedRun
 }
 
-ipcMain.handle('sidecar:getSnapshot', async () => safeSnapshot())
+ipcMain.handle('sidecar:getCodexStore', async () => safeCodexStore())
 
 ipcMain.handle('sidecar:getSidecarData', async () => readSidecarData())
+
+ipcMain.handle('sidecar:getHookStatus', async (_event, options = {}) => {
+  if (options?.refresh === false) {
+    return sidecarHookStatus
+  }
+
+  return refreshSidecarHookStatus()
+})
+
+ipcMain.handle('sidecar:openCodexSettings', async () => {
+  await shell.openExternal('codex://settings')
+  return true
+})
+
+ipcMain.handle('sidecar:openGitHub', async () => {
+  await shell.openExternal(APP_REPOSITORY_URL)
+  return true
+})
 
 const setFavoriteItem = async (item, favorite) => {
   if (typeof favorite !== 'boolean') {
@@ -3292,97 +4190,73 @@ const setFavoriteItem = async (item, favorite) => {
     throw new Error('favorite item is invalid.')
   }
 
-  const key = favoriteItemKey(normalizedItem)
-  const nextFavorites = await updateFavoritesData(favorites => {
-    const remainingFavorites = favorites.filter(candidate => favoriteItemKey(candidate) !== key)
-
-    return favorite
-      ? normalizeFavoriteItems([normalizedItem, ...remainingFavorites])
-      : remainingFavorites
-  })
-  const savedItem = nextFavorites.find(candidate => favoriteItemKey(candidate) === key) || null
-
-  return {
-    key,
-    favorite: Boolean(savedItem),
-    item: savedItem || normalizedItem
-  }
+  return getSidecarStore().setFavorite(normalizedItem, favorite)
 }
 
-ipcMain.handle('sidecar:setFavorite', async (_event, item, favorite) => setFavoriteItem(item, favorite))
+ipcMain.handle('sidecar:setFavorite', async (_event, item, favorite) => {
+  const result = await setFavoriteItem(item, favorite)
+
+  await sendSidecarDataChanged()
+  return result
+})
 
 ipcMain.handle('sidecar:savePromptTemplates', async (_event, templates) => {
   if (!Array.isArray(templates)) {
     throw new Error('templates must be an array.')
   }
 
-  const nextData = await updateSidecarData(data => ({
-    ...data,
-    promptTemplates: normalizePromptTemplates(templates)
-  }))
+  const promptTemplates = getSidecarStore().savePromptTemplates(normalizePromptTemplates(templates))
 
-  scheduleSnapshotBroadcast()
-  return nextData.promptTemplates
+  await sendSidecarDataChanged()
+  return promptTemplates
 })
 
 ipcMain.handle('sidecar:setLanguageMode', async (_event, languageMode) => {
-  const nextData = await updateSidecarData(data => ({
-    ...data,
-    settings: {
-      ...data.settings,
-      languageMode: normalizeLanguageMode(languageMode)
-    }
-  }))
+  const settings = getSidecarStore().updateSettings({ languageMode: normalizeLanguageMode(languageMode) })
 
-  scheduleSnapshotBroadcast()
-  return nextData.settings
+  await sendSidecarDataChanged()
+  return settings
 })
 
 ipcMain.handle('sidecar:setThemeMode', async (_event, themeMode) => {
-  const nextData = await updateSidecarData(data => ({
-    ...data,
-    settings: {
-      ...data.settings,
-      themeMode: normalizeThemeMode(themeMode)
-    }
-  }))
+  const settings = getSidecarStore().updateSettings({ themeMode: normalizeThemeMode(themeMode) })
 
-  applyThemeModeToNativeTheme(nextData.settings.themeMode)
-  scheduleSnapshotBroadcast()
-  return nextData.settings
+  applyThemeModeToNativeTheme(settings.themeMode)
+  await sendSidecarDataChanged()
+  return settings
 })
 
 ipcMain.handle('sidecar:setMiniOverDock', async (_event, miniOverDock) => {
-  const nextData = await updateSidecarData(data => ({
-    ...data,
-    settings: {
-      ...data.settings,
-      miniOverDock: normalizeMiniOverDock(miniOverDock)
-    }
-  }))
+  const settings = getSidecarStore().updateSettings({ miniOverDock: normalizeMiniOverDock(miniOverDock) })
 
-  applyMiniOverDock(nextData.settings.miniOverDock)
-  scheduleSnapshotBroadcast()
-  return nextData.settings
+  applyMiniOverDock(settings.miniOverDock)
+  await sendSidecarDataChanged()
+  return settings
+})
+
+ipcMain.handle('sidecar:setShowMiniTool', async (_event, showMiniTool) => {
+  const settings = getSidecarStore().updateSettings({ showMiniTool: normalizeShowMiniTool(showMiniTool) })
+
+  applyShowMiniTool(settings.showMiniTool)
+  await sendSidecarDataChanged()
+  return settings
 })
 
 ipcMain.handle('sidecar:setShowMiniPrompts', async (_event, showMiniPrompts) => {
-  const nextData = await updateSidecarData(data => ({
-    ...data,
-    settings: {
-      ...data.settings,
-      showMiniPrompts: normalizeShowMiniPrompts(showMiniPrompts)
-    }
-  }))
+  const settings = getSidecarStore().updateSettings({ showMiniPrompts: normalizeShowMiniPrompts(showMiniPrompts) })
 
-  scheduleSnapshotBroadcast()
-  return nextData.settings
+  await sendSidecarDataChanged()
+  return settings
 })
 
 ipcMain.handle('sidecar:exportData', async () => {
-  const exportData = await readSidecarData()
+  const sidecarData = await readSidecarData()
+  const exportData = {
+    ...sidecarData,
+    explorations: getSidecarStore().listExplorationRuns()
+  }
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: getSidecarText(exportData.settings, 'exportTitle'),
+    title: getSidecarText(sidecarData.settings, 'exportTitle'),
     defaultPath: `codex-sidecar-export-${new Date().toISOString().slice(0, 10)}.json`,
     filters: [{ name: 'JSON', extensions: ['json'] }]
   })
@@ -3407,12 +4281,16 @@ ipcMain.handle('sidecar:importData', async () => {
     return { canceled: true }
   }
 
-  const imported = normalizeSidecarData(await readJsonFile(result.filePaths[0]))
+  const importedRaw = await readJsonFile(result.filePaths[0])
+  const imported = normalizeSidecarData(importedRaw)
 
   await saveSidecarData(imported)
+  getSidecarStore().replaceExplorationRuns(Array.isArray(importedRaw.explorations) ? importedRaw.explorations : [])
   applyThemeModeToNativeTheme(imported.settings.themeMode)
   applyMiniOverDock(imported.settings.miniOverDock)
-  scheduleSnapshotBroadcast()
+  applyShowMiniTool(imported.settings.showMiniTool)
+  await sendSidecarDataChanged(imported)
+  sendExplorationsChanged()
 
   return { canceled: false, filePath: result.filePaths[0] }
 })
@@ -3426,52 +4304,102 @@ ipcMain.handle('sidecar:openThread', async (_event, threadId) => {
   return true
 })
 
-ipcMain.handle('sidecar:openThreadAndSearch', async (_event, threadId, searchText) => {
-  if (!threadId || typeof threadId !== 'string') {
-    throw new Error('threadId is required.')
-  }
-
-  if (typeof searchText !== 'string' || !searchText.trim()) {
-    throw new Error('searchText is required.')
-  }
-
-  await openCodexThread(threadId)
-  await delay(THREAD_SEARCH_OPEN_DELAY_MS)
-  await searchCodexCurrentThread(searchText.trim())
-  return true
-})
-
-ipcMain.handle('sidecar:continueThreadWithSummary', async (_event, threadId, cwd) => {
+ipcMain.handle('sidecar:continueThreadWithSummary', async (_event, threadId, cwd, sourceUpdatedAt) => {
   if (!threadId || typeof threadId !== 'string') {
     throw new Error('threadId is required.')
   }
 
   const result = await runThreadContinuationSummary(threadId, cwd)
-
-  await openNewCodexThread({
+  const continuationResult = getSidecarStore().saveContinuationResult({
+    threadId,
+    sourceUpdatedAt: normalizeNullableTimestamp(sourceUpdatedAt),
+    summary: result.summary,
     prompt: result.prompt,
-    path: result.cwd
+    completedAt: Date.now(),
+    unread: true
   })
 
+  await sendSidecarDataChanged()
+
   return {
-    threadId,
+    ...continuationResult,
     forkThreadId: result.forkThreadId,
-    summary: result.summary,
-    prompt: result.prompt
   }
 })
 
-ipcMain.handle('sidecar:checkAccessibilityPermission', async () => checkAccessibilityPermission())
+ipcMain.handle('sidecar:setContinuationResultUnread', async (_event, threadId, unread) => {
+  if (!threadId || typeof threadId !== 'string') {
+    throw new Error('threadId is required.')
+  }
 
-ipcMain.handle('sidecar:getThreadUserMessages', async (_event, threadId) => {
+  if (typeof unread !== 'boolean') {
+    throw new Error('unread must be a boolean.')
+  }
+
+  const result = getSidecarStore().setContinuationResultUnread(threadId, unread)
+
+  await sendSidecarDataChanged()
+  return result
+})
+
+ipcMain.handle('sidecar:chooseExplorationImages', async event => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow
+  const result = await dialog.showOpenDialog(sourceWindow, {
+    title: '选择优选图片',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{
+      name: 'Images',
+      extensions: [...EXPLORATION_IMAGE_EXTENSIONS]
+    }]
+  })
+
+  if (result.canceled) {
+    return []
+  }
+
+  return result.filePaths
+    .map(filePath => normalizeImagePathInput(filePath))
+    .filter(Boolean)
+    .map(filePath => ({
+      path: filePath,
+      name: path.basename(filePath)
+    }))
+})
+
+ipcMain.handle('sidecar:createExplorationRun', async (_event, request) => createExplorationRun(request))
+
+ipcMain.handle('sidecar:getExplorations', async () => getSidecarStore().listExplorationRuns())
+
+ipcMain.handle('sidecar:getExplorationRun', async (_event, runId) => {
+  const normalizedId = normalizeExplorationString(runId, 120).trim()
+
+  if (!normalizedId) {
+    return null
+  }
+
+  return getExplorationRun(normalizedId)
+})
+
+ipcMain.handle('sidecar:openExplorationResult', async (_event, runId) => {
+  const run = await getExplorationRun(normalizeExplorationString(runId, 120).trim())
+
+  if (!run) {
+    throw new Error('优选记录不存在。')
+  }
+
+  createExplorationResultWindow(run.id)
+  return true
+})
+
+ipcMain.handle('sidecar:getThreadTurnPreviews', async (_event, threadId) => {
   if (!threadId || typeof threadId !== 'string') {
     throw new Error('threadId is required.')
   }
 
   const client = await getCodexClient()
-  const messages = await readThreadUserMessages(client, threadId)
+  const turnPreviews = await readThreadTurnPreviews(client, threadId)
 
-  return { threadId, messages }
+  return { threadId, turnPreviews }
 })
 
 ipcMain.handle('sidecar:showPopupMenu', async (event, options) => {
@@ -3553,10 +4481,22 @@ ipcMain.on('sidecar:miniDragEnd', (event, point) => {
 
 ipcMain.handle('sidecar:getWindowMode', async event => getWindowModeForWebContents(event.sender))
 
-ipcMain.handle('sidecar:setWindowMode', async (_event, mode) => {
+ipcMain.handle('sidecar:showMainWindow', async () => showFullWindow())
+
+ipcMain.handle('sidecar:setWindowMode', async (_event, mode, options = {}) => {
   const nextMode = mode === 'mini' ? 'mini' : 'full'
 
-  return nextMode === 'mini' ? showMiniWindow() : showFullWindow()
+  if (nextMode === 'mini') {
+    const settings = getSidecarStore().updateSettings({ showMiniTool: true })
+
+    applyShowMiniTool(settings.showMiniTool)
+    await sendSidecarDataChanged()
+    return true
+  }
+
+  return showFullWindow({
+    activePanel: normalizeFullPanelKey(options?.activePanel)
+  })
 })
 
 app.whenReady().then(async () => {
@@ -3565,20 +4505,18 @@ app.whenReady().then(async () => {
 
   applyThemeModeToNativeTheme(initialSidecarData.settings.themeMode)
   applyMiniOverDock(initialSidecarData.settings.miniOverDock)
+  currentShowMiniTool = normalizeShowMiniTool(initialSidecarData.settings.showMiniTool)
   await ensureSidecarHookIntegration()
+  await refreshSidecarHookStatus({ applyMini: false, broadcast: false })
   await watchHookEvents()
   watchNativeUnreadState()
   createWindow()
+  applyShowMiniTool(initialSidecarData.settings.showMiniTool)
   prewarmPopupMenuWindow()
 
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
-      return
-    }
-
-    if (currentWindowMode === 'mini' && miniWindow && !miniWindow.isDestroyed()) {
-      miniWindow.showInactive()
       return
     }
 
@@ -3616,5 +4554,10 @@ app.on('before-quit', () => {
 
   if (codexClient) {
     codexClient.dispose()
+  }
+
+  if (sidecarStore) {
+    sidecarStore.close()
+    sidecarStore = null
   }
 })

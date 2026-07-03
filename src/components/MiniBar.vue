@@ -1,6 +1,6 @@
 <template>
   <div
-    class="group/mini flex h-full w-full cursor-default items-center gap-2 bg-white pr-1.5 pl-3 text-slate-900 select-none dark:bg-neutral-950 dark:text-gray-100"
+    class="group/mini flex h-full w-full cursor-default items-center gap-2 bg-default pr-1.5 pl-3 text-slate-900 select-none dark:text-gray-100"
     @pointerdown="handlePointerDown"
     @pointermove="handlePointerMove"
     @pointerup="handlePointerEnd"
@@ -62,9 +62,8 @@
       <div class="flex min-w-0 flex-none items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
         <button
           type="button"
-          class="group inline-flex h-4 w-6 flex-none cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-gray-500 [-webkit-app-region:no-drag] hover:text-gray-950 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
+          class="group inline-flex text-[11px] h-4 w-6 flex-none cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-gray-500 [-webkit-app-region:no-drag] hover:text-gray-950 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
           :aria-label="toggleModeLabel"
-          :title="toggleModeLabel"
           @click="$emit('toggle-mode')"
         >
           <span class="leading-none group-hover:hidden">{{ usageLabel }}</span>
@@ -92,24 +91,21 @@
       <button
         v-if="showPrompts"
         type="button"
-        class="inline-flex h-[14px] w-[14px] flex-none items-center justify-center rounded border-0 bg-transparent p-0 text-gray-500 [-webkit-app-region:no-drag] focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-400"
-        :class="promptTemplates.length === 0 ? 'cursor-default opacity-35' : 'cursor-pointer hover:text-gray-950 dark:hover:text-gray-100'"
-        :disabled="promptTemplates.length === 0"
+        class="inline-flex size-3.5 flex-none cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-gray-500 [-webkit-app-region:no-drag] hover:text-gray-950 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
         :aria-label="t('panels.prompts')"
         @click="$emit('prompts-click', $event)"
       >
-        <UIcon name="i-lucide-pencil-sparkles" class="h-3.5 w-3.5" />
+        <UIcon name="i-lucide-pencil-sparkles" />
       </button>
     </div>
-    <div class="pointer-events-none flex h-full w-[18px] flex-none items-center justify-center opacity-0 transition-opacity duration-150 ease-out [-webkit-app-region:no-drag] group-hover/mini:pointer-events-auto group-hover/mini:opacity-100 group-focus-within/mini:pointer-events-auto group-focus-within/mini:opacity-100 motion-reduce:transition-none">
+    <div class="flex h-full w-[18px] flex-none items-center justify-center [-webkit-app-region:no-drag]">
       <button
         type="button"
-        class="inline-flex h-[18px] w-[18px] cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-gray-500 [-webkit-app-region:no-drag] hover:text-gray-950 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
+        class="inline-flex size-3.5 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-gray-500 [-webkit-app-region:no-drag] hover:text-gray-950 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
         :aria-label="t('mini.expandFull')"
-        :title="t('mini.expandFull')"
         @click="$emit('expand')"
       >
-        <UIcon name="i-lucide-maximize-2" class="h-3 w-3" />
+        <UIcon name="i-lucide-picture-in-picture-2" />
       </button>
     </div>
   </div>

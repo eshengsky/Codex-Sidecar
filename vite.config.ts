@@ -4,6 +4,7 @@ import ui from '@nuxt/ui/vite'
 import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
+  base: './',
   plugins: [
     vue(),
     ui({

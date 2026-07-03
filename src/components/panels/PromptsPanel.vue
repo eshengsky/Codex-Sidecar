@@ -1,5 +1,5 @@
 <template>
-  <section class="flex min-h-0 flex-col gap-2.5">
+  <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5 overflow-hidden">
     <div class="flex min-w-0 items-center gap-2">
       <UInput
         v-model="searchTerm"
@@ -21,14 +21,14 @@
         :description="t('prompts.emptyDescription')"
         variant="naked"
         size="xs"
-        class="min-h-[220px] justify-self-center"
+        class="min-h-[220px] self-center"
       />
 
       <article
         v-for="template in visibleTemplates"
         v-else
         :key="template.id"
-        class="flex min-w-0 flex-col gap-1.5 rounded-lg border border-default bg-white p-2.5 text-gray-900 hover:bg-neutral-50 dark:bg-neutral-900 dark:text-gray-100 dark:hover:bg-neutral-800"
+        class="flex min-w-0 flex-col gap-1.5 rounded-lg border border-default bg-default p-2.5 text-gray-900 hover:bg-neutral-50 dark:text-gray-100 dark:hover:bg-neutral-800"
       >
         <div class="flex min-w-0 items-center gap-2">
           <h3 class="m-0 min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm leading-tight font-semibold text-gray-900 dark:text-gray-100">
@@ -65,31 +65,38 @@
     </div>
 
     <UModal v-model:open="templateModalOpen" :title="editingTemplateId ? t('prompts.editTitle') : t('prompts.newTitle')">
+      <template #title>
+        <div class="flex min-w-0 items-center gap-1.5">
+          <span class="min-w-0 truncate">{{ editingTemplateId ? t('prompts.editTitle') : t('prompts.newTitle') }}</span>
+          <UPopover
+            v-if="!editingTemplateId"
+            mode="hover"
+            :open-delay="200"
+            :close-delay="0"
+            :content="{ side: 'bottom', align: 'start', sideOffset: 6 }"
+          >
+            <button
+              type="button"
+              :aria-label="t('prompts.tipsTitle')"
+              class="inline-flex size-4 flex-none cursor-default items-center justify-center rounded-full border-0 bg-transparent p-0 text-gray-400 transition-colors hover:bg-transparent hover:text-gray-700 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-500 dark:hover:text-gray-200"
+            >
+              <UIcon name="i-lucide-circle-question-mark" class="size-3.5" />
+            </button>
+
+            <template #content>
+              <div class="flex max-w-72 flex-col gap-1.5 px-3 py-2.5 text-xs leading-snug font-normal text-gray-600 dark:text-gray-300">
+                <span class="font-medium text-gray-700 dark:text-gray-200">{{ t('prompts.tipsTitle') }}</span>
+                <span>{{ t('prompts.tipsAgent') }}</span>
+                <span>{{ t('prompts.tipsSkill') }}</span>
+                <span>{{ t('prompts.tipsPrompt') }}</span>
+              </div>
+            </template>
+          </UPopover>
+        </div>
+      </template>
+
       <template #body>
         <div class="flex flex-col gap-2.5">
-          <div
-            v-if="!editingTemplateId && !promptTipsDismissed"
-            class="flex flex-col gap-1.5 rounded-lg bg-gray-50 px-3 py-2.5 text-xs leading-snug text-gray-600 dark:bg-neutral-800 dark:text-gray-300"
-          >
-            <div class="flex min-w-0 items-start gap-2">
-              <span class="min-w-0 flex-1 font-medium text-gray-700 dark:text-gray-200">{{ t('prompts.tipsTitle') }}</span>
-              <UTooltip :text="t('prompts.tipsDismiss')">
-                <UButton
-                  icon="i-lucide-x"
-                  color="neutral"
-                  variant="ghost"
-                  size="xs"
-                  square
-                  :aria-label="t('prompts.tipsDismiss')"
-                  @click="dismissPromptTips"
-                />
-              </UTooltip>
-            </div>
-            <span>{{ t('prompts.tipsAgent') }}</span>
-            <span>{{ t('prompts.tipsSkill') }}</span>
-            <span>{{ t('prompts.tipsPrompt') }}</span>
-          </div>
-
           <label class="flex flex-col gap-1 text-xs font-normal text-gray-500 dark:text-gray-400">
             <span>{{ t('prompts.titleLabel') }}</span>
             <UInput v-model="templateDraft.name" :placeholder="t('prompts.titlePlaceholder')" size="xs" color="neutral" autofocus />
@@ -141,7 +148,6 @@ const editableTemplates = ref<PromptTemplate[]>([])
 const templateModalOpen = ref(false)
 const editingTemplateId = ref<string | null>(null)
 const templateDraft = ref<PromptTemplate>(createBlankTemplate())
-const promptTipsDismissed = ref(localStorage.getItem('sidecar.promptTips.dismissed') === '1')
 const { t } = useI18n()
 
 watch(
@@ -195,11 +201,6 @@ const openTemplateEditor = (template: PromptTemplate) => {
   editingTemplateId.value = template.id
   templateDraft.value = { ...template }
   templateModalOpen.value = true
-}
-
-const dismissPromptTips = () => {
-  promptTipsDismissed.value = true
-  localStorage.setItem('sidecar.promptTips.dismissed', '1')
 }
 
 const saveTemplateDraft = () => {

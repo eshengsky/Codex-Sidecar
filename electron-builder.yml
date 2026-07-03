@@ -1,0 +1,27 @@
+appId: com.skysun.codex-sidecar
+productName: Codex Sidecar
+
+directories:
+  output: release
+
+files:
+  - electron/**
+  - dist/renderer/**
+  - package.json
+  - '!electron/**/*.test.cjs'
+  - '!**/*.map'
+
+asar: true
+asarUnpack:
+  - '**/*.node'
+
+npmRebuild: true
+nativeRebuilder: sequential
+nodeGypRebuild: false
+
+mac:
+  icon: build/icon.icns
+  category: public.app-category.developer-tools
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  target:
+    - dmg

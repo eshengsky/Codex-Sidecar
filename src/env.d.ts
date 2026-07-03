@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 import type {
+  ExplorationCreateRequest,
+  ExplorationRun,
   FavoriteItem,
   LanguageMode,
   OpenNewThreadOptions,
@@ -8,11 +10,14 @@ import type {
   PopupMenuResult,
   PopupMenuShowOptions,
   PromptTemplate,
+  CodexStore,
   SidecarData,
+  SidecarHookStatus,
   SidecarSettings,
-  SidecarSnapshot,
   ThemeMode,
-  ThreadUserMessagePreview
+  ThreadContinuationRunResult,
+  ThreadContinuationResult,
+  ThreadTurnPreview
 } from './types/sidecar'
 
 interface MiniDragPoint {
@@ -20,26 +25,35 @@ interface MiniDragPoint {
   screenY: number
 }
 
-type WindowMode = 'mini' | 'full' | 'popup-menu'
+type WindowMode = 'mini' | 'full' | 'popup-menu' | 'exploration-result'
+type PanelKey = 'threads' | 'bookmarks' | 'explorations' | 'prompts' | 'data'
 
 declare global {
   interface Window {
     sidecar: {
-      getSnapshot: (options?: unknown) => Promise<SidecarSnapshot>
+      getCodexStore: (options?: unknown) => Promise<CodexStore>
       getSidecarData: () => Promise<SidecarData>
+      getHookStatus: (options?: { refresh?: boolean }) => Promise<SidecarHookStatus>
+      openCodexSettings: () => Promise<boolean>
+      openGitHub: () => Promise<boolean>
       setFavorite: (item: FavoriteItem, favorite: boolean) => Promise<{ key: string, favorite: boolean, item: FavoriteItem }>
       savePromptTemplates: (templates: PromptTemplate[]) => Promise<PromptTemplate[]>
       setLanguageMode: (languageMode: LanguageMode) => Promise<SidecarSettings>
       setThemeMode: (themeMode: ThemeMode) => Promise<SidecarSettings>
       setMiniOverDock: (miniOverDock: boolean) => Promise<SidecarSettings>
+      setShowMiniTool: (showMiniTool: boolean) => Promise<SidecarSettings>
       setShowMiniPrompts: (showMiniPrompts: boolean) => Promise<SidecarSettings>
       exportData: () => Promise<{ canceled: boolean, filePath?: string }>
       importData: () => Promise<{ canceled: boolean, filePath?: string }>
       openThread: (threadId: string) => Promise<boolean>
-      openThreadAndSearch: (threadId: string, searchText: string) => Promise<boolean>
-      continueThreadWithSummary: (threadId: string, cwd: string) => Promise<{ threadId: string, forkThreadId: string, summary: string, prompt: string }>
-      checkAccessibilityPermission: () => Promise<{ granted: boolean, error: string | null }>
-      getThreadUserMessages: (threadId: string) => Promise<{ threadId: string, messages: ThreadUserMessagePreview[] }>
+      continueThreadWithSummary: (threadId: string, cwd: string, sourceUpdatedAt: number | null) => Promise<ThreadContinuationRunResult>
+      setContinuationResultUnread: (threadId: string, unread: boolean) => Promise<ThreadContinuationResult | null>
+      chooseExplorationImages: () => Promise<Array<{ path: string, name: string }>>
+      createExplorationRun: (request: ExplorationCreateRequest) => Promise<ExplorationRun>
+      getExplorations: () => Promise<ExplorationRun[]>
+      getExplorationRun: (runId: string) => Promise<ExplorationRun | null>
+      openExplorationResult: (runId: string) => Promise<boolean>
+      getThreadTurnPreviews: (threadId: string) => Promise<{ threadId: string, turnPreviews: ThreadTurnPreview[] }>
       showPopupMenu: (options: PopupMenuShowOptions) => Promise<PopupMenuResult>
       getPopupMenuData: () => Promise<PopupMenuData | null>
       selectPopupMenuItem: (itemId: string) => Promise<boolean>
@@ -49,13 +63,18 @@ declare global {
       copyText: (text: string) => Promise<boolean>
       closeWindow: () => Promise<boolean>
       getWindowMode: () => Promise<WindowMode>
-      setWindowMode: (mode: WindowMode) => Promise<boolean>
+      showMainWindow: () => Promise<boolean>
+      setWindowMode: (mode: WindowMode, options?: { activePanel?: PanelKey }) => Promise<boolean>
       startMiniDrag: (point: MiniDragPoint) => void
       moveMiniDrag: (point: MiniDragPoint) => void
       endMiniDrag: (point: MiniDragPoint) => void
       onWindowMode: (callback: (mode: WindowMode) => void) => () => void
+      onSelectPanel: (callback: (panel: PanelKey) => void) => () => void
       onPopupMenuData: (callback: (data: PopupMenuData) => void) => () => void
-      onSnapshot: (callback: (snapshot: SidecarSnapshot) => void) => () => void
+      onCodexStore: (callback: (codexStore: CodexStore) => void) => () => void
+      onSidecarDataChanged: (callback: (sidecarData: SidecarData) => void) => () => void
+      onHookStatusChanged: (callback: (hookStatus: SidecarHookStatus) => void) => () => void
+      onExplorationsChanged: (callback: (explorations: ExplorationRun[]) => void) => () => void
     }
   }
 }

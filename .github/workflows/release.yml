@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag matches package version
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+
+          if [[ "$GITHUB_REF_NAME" != "$EXPECTED_TAG" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_VERSION."
+            echo "Expected tag: $EXPECTED_TAG"
+            exit 1
+          fi
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Release $GITHUB_REF_NAME"
+
+  build:
+    name: Build ${{ matrix.id }}
+    needs: create-release
+    if: always() && (github.ref_type != 'tag' || needs.create-release.result == 'success')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: mac-arm64
+            runner: macos-15
+            arch: arm64
+            electron_builder_args: --mac dmg --arm64
+          - id: mac-x64
+            runner: macos-15-intel
+            arch: x64
+            electron_builder_args: --mac dmg --x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate mac release secrets
+        if: github.ref_type == 'tag'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+            echo "Missing CSC_LINK or CSC_KEY_PASSWORD repository secret."
+            exit 1
+          fi
+
+          if [[ -z "$APPLE_ID" || -z "$APPLE_APP_SPECIFIC_PASSWORD" || -z "$APPLE_TEAM_ID" ]]; then
+            echo "Missing APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, or APPLE_TEAM_ID repository secret."
+            exit 1
+          fi
+
+      - name: Package macOS ${{ matrix.arch }}
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          ELECTRON_BUILDER_ARGS: ${{ matrix.electron_builder_args }}
+          GH_TOKEN: ${{ github.token }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          pnpm build
+          pnpm exec electron-builder $ELECTRON_BUILDER_ARGS --publish never
+
+      - name: Verify macOS signature
+        if: github.ref_type == 'tag'
+        run: |
+          APP_PATH="$(find release -maxdepth 3 -name 'Codex Sidecar.app' -type d | head -n 1)"
+
+          if [[ -z "$APP_PATH" ]]; then
+            echo "Could not find packaged .app bundle."
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose "$APP_PATH"
+
+      - name: Show release files
+        run: find release -maxdepth 2 -type f | sort
+
+      - name: Upload release assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifacts=()
+          while IFS= read -r -d '' file; do
+            artifacts+=("$file")
+          done < <(find release -maxdepth 1 -type f -name '*.dmg' -print0)
+
+          if [[ "${#artifacts[@]}" -eq 0 ]]; then
+            echo "No release assets found."
+            exit 1
+          fi
+
+          gh release upload "$GITHUB_REF_NAME" "${artifacts[@]}" --clobber

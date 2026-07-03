@@ -1,5 +1,5 @@
 <template>
-  <div class="flex min-w-0 flex-col gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-2 dark:border-neutral-800 dark:bg-neutral-900">
+  <div class="flex min-w-0 flex-col gap-1.5 rounded-lg border border-gray-200 bg-default px-2.5 py-2 dark:border-neutral-800">
     <div class="flex items-center justify-between gap-2.5 text-xs text-gray-700 dark:text-gray-200">
       <span>{{ displayWindowLabel }}</span>
       <span class="numeric-mono text-[13px]" :class="toneClass.text">{{ displayPercent }}%</span>

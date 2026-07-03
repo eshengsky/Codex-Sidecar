@@ -6,10 +6,13 @@
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
+    "postinstall": "electron-builder install-app-deps",
     "dev": "node scripts/dev.mjs",
     "dev:renderer": "vite --host 127.0.0.1",
     "build": "vite build",
+    "release:local": "node scripts/release-local.mjs",
     "preview": "vite preview",
+    "test:store": "ELECTRON_RUN_AS_NODE=1 electron --test electron/sidecar-store.test.cjs",
     "typecheck": "vue-tsc --noEmit",
     "codex:schema": "codex app-server generate-ts --out src/codex-schema"
   },
@@ -20,15 +23,18 @@
     "@iconify-json/proicons": "^1.2.19",
     "@iconify/vue": "^5.0.1",
     "@nuxt/ui": "^4.8.2",
+    "better-sqlite3": "^12.11.1",
     "tailwindcss": "^4.3.1",
     "vue": "^3.5.38",
     "vue-i18n": "^11.4.6",
-    "vue-router": "^5.1.0"
+    "vue-router": "^5.1.0",
+    "vue-stream-markdown": "^0.6.5"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
     "@vitejs/plugin-vue": "^6.0.7",
     "electron": "^42.4.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "vue-tsc": "^3.3.5"

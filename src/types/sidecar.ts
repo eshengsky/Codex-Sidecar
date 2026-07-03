@@ -4,6 +4,17 @@ export type UsageDisplayMode = 'used' | 'remaining'
 export type AppLocale = 'en' | 'zh'
 export type LanguageMode = 'auto' | AppLocale
 export type ThemeMode = 'auto' | 'light' | 'dark'
+export type SidecarHookIssue = 'missing' | 'untrusted' | 'disabled'
+
+export interface SidecarHookStatus {
+  ready: boolean
+  issue: SidecarHookIssue | null
+  missingEvents: string[]
+  untrustedEvents: string[]
+  disabledEvents: string[]
+  checkedAt: number
+  error: string | null
+}
 
 export interface PopupMenuPoint {
   screenX: number
@@ -71,7 +82,7 @@ export interface ThreadSummary {
   path: string | null
 }
 
-export type SnapshotThreadSummary = Omit<ThreadSummary, 'favorite'>
+export type CodexStoreThreadSummary = Omit<ThreadSummary, 'favorite'>
 
 export interface RateLimitWindow {
   label: string
@@ -95,17 +106,17 @@ export interface ThreadFavoriteItem {
   createdAt: number
 }
 
-export interface MessageFavoriteItem {
-  type: 'message'
+export interface TurnFavoriteItem {
+  type: 'turn'
   id: string
   threadId: string
-  messageId: string
   turnId: string
-  itemId: string
-  index: number
-  preview: string
-  searchText: string
-  messageCreatedAt: number | null
+  userItemId: string
+  userPreview: string
+  userSearchText: string
+  assistantItemId: string
+  assistantPreview: string
+  turnCreatedAt: number | null
   createdAt: number
   threadTitle: string
   codexTitle: string
@@ -113,8 +124,8 @@ export interface MessageFavoriteItem {
   projectName: string
 }
 
-export type FavoriteItem = ThreadFavoriteItem | MessageFavoriteItem
-export type MessageBookmark = MessageFavoriteItem
+export type FavoriteItem = ThreadFavoriteItem | TurnFavoriteItem
+export type TurnBookmark = TurnFavoriteItem
 
 export interface PromptTemplate {
   id: string
@@ -123,21 +134,94 @@ export interface PromptTemplate {
   defaultPath?: string
 }
 
-export interface ThreadUserMessagePreview {
+export interface ThreadTurnPreview {
   id: string
   turnId: string
-  itemId: string
-  preview: string
-  searchText: string
+  userItemId: string
+  userPreview: string
+  userSearchText: string
+  assistantItemId: string
+  assistantPreview: string
   createdAt: number | null
   index: number
+}
+
+export type ExplorationRunStatus = 'running' | 'summarizing' | 'completed' | 'partialFailed' | 'failed'
+export type ExplorationCandidateStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type ExplorationSummaryStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+export interface ExplorationImage {
+  id: string
+  name: string
+  path: string
+  createdAt: number
+}
+
+export interface ExplorationCandidate {
+  id: string
+  index: number
+  threadId: string | null
+  turnId: string | null
+  status: ExplorationCandidateStatus
+  output: string
+  error: string | null
+  startedAt: number | null
+  completedAt: number | null
+}
+
+export interface ExplorationSummary {
+  threadId: string | null
+  turnId: string | null
+  status: ExplorationSummaryStatus
+  output: string
+  error: string | null
+  startedAt: number | null
+  completedAt: number | null
+}
+
+export interface ExplorationRun {
+  id: string
+  title: string
+  prompt: string
+  images: ExplorationImage[]
+  concurrency: number
+  sourceThreadId: string | null
+  sourceThreadTitle: string | null
+  sourceThreadCwd: string | null
+  status: ExplorationRunStatus
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+  candidates: ExplorationCandidate[]
+  summary: ExplorationSummary
+}
+
+export interface ExplorationCreateRequest {
+  prompt: string
+  imagePaths: string[]
+  concurrency: number
+  sourceThreadId?: string | null
 }
 
 export interface SidecarSettings {
   languageMode: LanguageMode
   themeMode: ThemeMode
   miniOverDock: boolean
+  showMiniTool: boolean
   showMiniPrompts: boolean
+}
+
+export interface ThreadContinuationResult {
+  threadId: string
+  sourceUpdatedAt: number | null
+  summary: string
+  prompt: string
+  completedAt: number
+  unread: boolean
+}
+
+export interface ThreadContinuationRunResult extends ThreadContinuationResult {
+  forkThreadId: string
 }
 
 export interface SidecarData {
@@ -146,6 +230,7 @@ export interface SidecarData {
   favorites: FavoriteItem[]
   contextUsageByThread: Record<string, ContextUsageCache>
   threadLinks: Array<{ fromThreadId: string, toThreadId: string, createdAt: number, summary?: string }>
+  continuationResults: Record<string, ThreadContinuationResult>
   settings: SidecarSettings
 }
 
@@ -156,7 +241,7 @@ export interface NativeUnreadState {
   error: string | null
 }
 
-export interface SidecarSnapshot {
+export interface CodexStore {
   generatedAt: number
   connection: {
     connected: boolean
@@ -164,8 +249,7 @@ export interface SidecarSnapshot {
   }
   nativeUnread: NativeUnreadState
   rateLimits: RateLimitSummary | null
-  threads: SnapshotThreadSummary[]
-  sidecarData: SidecarData
+  threads: CodexStoreThreadSummary[]
   error?: string
 }
 

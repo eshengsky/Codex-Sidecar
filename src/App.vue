@@ -12,37 +12,192 @@
     <MiniBar
       v-else-if="mode === 'mini'"
       :counts="counts"
-      :rate-limits="snapshot?.rateLimits || null"
-      :prompt-templates="snapshot?.sidecarData.promptTemplates || []"
+      :rate-limits="codexStore?.rateLimits || null"
+      :prompt-templates="promptTemplates"
       :show-prompts="showMiniPrompts"
       :usage-mode="usageMode"
       :class="modeSwitching ? 'opacity-0 pointer-events-none' : ''"
-      @expand="setMode('full')"
+      @expand="showMainWindow"
       @prompts-click="handleMiniPromptsClick"
       @status-click="handleStatusTileClick"
       @toggle-mode="toggleUsageMode"
     />
 
     <div
-      v-else
-      class="flex h-full w-full flex-col overflow-hidden bg-white text-gray-900 dark:bg-neutral-950 dark:text-gray-100"
-      :class="modeSwitching ? 'opacity-0 pointer-events-none' : ''"
+      v-else-if="mode === 'exploration-result'"
+      class="relative flex h-full w-full flex-col overflow-hidden bg-default text-gray-900 dark:text-gray-100"
     >
-      <header class="flex h-9 min-w-0 flex-none items-center justify-end px-2.5 [-webkit-app-region:drag]">
-        <UTooltip :text="t('app.miniMode')">
-          <UButton icon="i-lucide-minimize-2" color="neutral" variant="ghost" size="xs" square class="[-webkit-app-region:no-drag]" @click="setMode('mini')" />
-        </UTooltip>
+      <header class="flex h-10 min-w-0 flex-none items-center justify-center border-b border-gray-100 px-3 [-webkit-app-region:drag] dark:border-neutral-800">
+        <div class="min-w-0 flex-1 basis-0 px-16 text-center">
+          <h1 class="m-0 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-[760]">
+            {{ t('explorations.resultTitle') }}
+          </h1>
+        </div>
       </header>
 
+      <main class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
+        <div v-if="explorationResultLoading && !explorationResultRun" class="flex min-h-0 flex-1 flex-col gap-2">
+          <USkeleton class="h-8 rounded-lg" />
+          <USkeleton class="h-10 rounded-lg" />
+          <USkeleton class="min-h-0 flex-1 rounded-lg" />
+        </div>
+
+        <UEmpty
+          v-else-if="!explorationResultRun"
+          :title="explorationResultError || t('explorations.missingResult')"
+          variant="naked"
+          size="sm"
+          class="min-h-[260px] self-center"
+        />
+
+        <template v-else>
+          <div class="flex min-w-0 flex-none flex-col gap-1.5 text-xs leading-[1.45] text-gray-500 dark:text-gray-400">
+            <span v-if="explorationResultSourceLabel" class="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+              {{ t('explorations.basedOn', { title: explorationResultSourceLabel }) }}
+            </span>
+
+            <div class="flex min-w-0 items-start gap-2">
+              <p class="m-0 line-clamp-3 min-w-0 flex-1 basis-0 text-[13px] leading-[1.45] text-gray-700 [overflow-wrap:anywhere] dark:text-gray-200">
+                {{ explorationResultPromptText }}
+              </p>
+              <UPopover
+                mode="click"
+                :content="{ side: 'bottom', align: 'end', sideOffset: 6 }"
+              >
+                <button
+                  type="button"
+                  class="flex-none border-0 bg-transparent p-0 text-xs leading-[1.45] whitespace-nowrap text-gray-500 underline-offset-2 hover:text-gray-900 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
+                >
+                  {{ t('explorations.viewFullRequest') }}
+                </button>
+
+                <template #content>
+                  <div class="max-h-[55vh] w-[calc(100vw-2rem)] max-w-[560px] overflow-auto px-3 py-2.5 text-[13px] leading-[1.55] text-gray-700 dark:text-gray-200">
+                    <div class="mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400">{{ t('explorations.originalRequest') }}</div>
+                    <p class="m-0 whitespace-pre-wrap [overflow-wrap:anywhere]">{{ explorationResultPromptText }}</p>
+                  </div>
+                </template>
+              </UPopover>
+            </div>
+          </div>
+
+          <div class="flex min-w-0 flex-none items-center justify-between gap-2">
+            <div class="min-w-0 flex-1 basis-0">
+              <div class="flex min-w-0 w-fit max-w-full gap-1 overflow-x-auto rounded-lg bg-neutral-200/70 p-0.5 dark:bg-neutral-800" role="tablist">
+                <button
+                  v-for="tab in explorationResultTabs"
+                  :key="tab.key"
+                  type="button"
+                  class="inline-flex h-8 flex-none items-center justify-center rounded-[7px] border-0 px-3 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400"
+                  :class="explorationResultTab === tab.key ? 'bg-default text-gray-950 dark:bg-accented dark:text-white' : 'bg-transparent text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'"
+                  role="tab"
+                  :aria-selected="explorationResultTab === tab.key"
+                  @click="explorationResultTab = tab.key"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+            </div>
+
+            <div class="flex flex-none items-center gap-1">
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="xs"
+                icon="i-lucide-copy"
+                class="whitespace-nowrap"
+                :disabled="!selectedExplorationResultText"
+                @click="copyCurrentExplorationResult"
+              >
+                {{ t('explorations.copyContent') }}
+              </UButton>
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="xs"
+                icon="i-lucide-message-square-text"
+                class="whitespace-nowrap"
+                :disabled="!selectedExplorationContinuationText"
+                @click="copyCurrentExplorationContinuation"
+              >
+                {{ t('explorations.copyContinuation') }}
+              </UButton>
+            </div>
+          </div>
+
+          <section class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[9px] border border-default bg-default">
+            <div
+              v-if="selectedExplorationResultText"
+              class="min-h-0 flex-1 overflow-auto p-4"
+            >
+              <MarkdownBlock :content="selectedExplorationResultText" />
+            </div>
+            <div v-else class="flex min-h-0 flex-1 items-center justify-center p-4 text-center text-sm text-gray-500 dark:text-gray-400">
+              {{ selectedExplorationResultEmptyText }}
+            </div>
+          </section>
+        </template>
+      </main>
+
+    </div>
+
+    <div
+      v-else
+      class="flex h-full w-full flex-col overflow-hidden bg-default text-gray-900 dark:text-gray-100"
+      :class="modeSwitching ? 'opacity-0 pointer-events-none' : ''"
+    >
+      <header class="h-9 flex-none [-webkit-app-region:drag]" />
+
       <main class="relative flex min-h-0 w-full flex-1 flex-col gap-2 overflow-hidden px-2.5 pb-2.5">
-      <section v-if="snapshot?.error || usageWarning" class="flex min-w-0 flex-col">
+      <section
+        v-if="showHookSetup"
+        class="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 px-4 py-8"
+      >
         <UAlert
-          v-if="snapshot?.error"
+          v-if="hookSetupStatusText"
+          color="warning"
+          variant="soft"
+          icon="i-lucide-circle-alert"
+          :title="hookSetupStatusText"
+          class="w-full max-w-[300px] text-left p-3"
+        />
+
+        <p class="m-0 max-w-[300px] text-center text-[13px] leading-[1.55] text-gray-600 dark:text-gray-300">
+          {{ t('hookSetup.description') }}
+        </p>
+
+        <ol class="m-0 flex w-full max-w-[280px] list-none flex-col gap-2 p-0 text-left text-[13px] leading-[1.45] text-gray-700 dark:text-gray-200">
+          <li
+            v-for="step in hookSetupSteps"
+            :key="step.index"
+            class="flex min-w-0 items-center gap-2.5"
+          >
+            <span class="numeric-mono inline-flex size-5 flex-none items-center justify-center rounded-full bg-neutral-100 text-[11px] font-semibold text-gray-700 dark:bg-neutral-800 dark:text-gray-200">
+              {{ step.index }}
+            </span>
+            <span class="min-w-0 flex-1 basis-0">{{ step.label }}</span>
+          </li>
+        </ol>
+
+        <UButton
+          color="neutral"
+          size="sm"
+          icon="i-lucide-settings"
+          @click="openCodexSettings"
+        >
+          {{ t('hookSetup.openSettings') }}
+        </UButton>
+      </section>
+
+      <template v-else>
+      <section v-if="codexStore?.error || usageWarning" class="flex min-w-0 flex-col">
+        <UAlert
+          v-if="codexStore?.error"
           color="error"
           variant="soft"
           icon="i-lucide-circle-alert"
           :title="t('app.dataReadFailed')"
-          :description="snapshot.error"
+          :description="codexStore.error"
         />
 
         <UAlert
@@ -68,7 +223,6 @@
               type="button"
               class="inline-flex h-6 w-full items-center justify-center gap-1.5 rounded-[7px] border-0 bg-transparent px-1.5 text-gray-600 dark:text-gray-400"
               :class="[
-                activePanel === 'threads' && activeFilter === tile.key ? 'bg-elevated' : '',
                 tile.count === 0 ? 'cursor-default opacity-35 hover:bg-transparent' : 'cursor-pointer hover:bg-elevated'
               ]"
               :aria-label="tile.label"
@@ -88,274 +242,92 @@
         </div>
       </section>
 
-      <section v-if="snapshot?.rateLimits?.primary || snapshot?.rateLimits?.secondary" class="flex min-w-0 gap-2">
-        <UsageMeter v-if="snapshot?.rateLimits?.primary" :window="snapshot.rateLimits.primary" :mode="usageMode" class="min-w-0 flex-1 basis-0" @toggle-mode="toggleUsageMode" />
-        <UsageMeter v-if="snapshot?.rateLimits?.secondary" :window="snapshot.rateLimits.secondary" :mode="usageMode" class="min-w-0 flex-1 basis-0" @toggle-mode="toggleUsageMode" />
+      <section v-if="codexStore?.rateLimits?.primary || codexStore?.rateLimits?.secondary" class="flex min-w-0 gap-2">
+        <UsageMeter v-if="codexStore?.rateLimits?.primary" :window="codexStore.rateLimits.primary" :mode="usageMode" class="min-w-0 flex-1 basis-0" @toggle-mode="toggleUsageMode" />
+        <UsageMeter v-if="codexStore?.rateLimits?.secondary" :window="codexStore.rateLimits.secondary" :mode="usageMode" class="min-w-0 flex-1 basis-0" @toggle-mode="toggleUsageMode" />
       </section>
 
-      <section v-if="activePanel === 'threads'" class="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5">
-        <div class="flex min-w-0 flex-col gap-2">
-          <UInput v-model="searchTerm" icon="i-lucide-search" :placeholder="t('threads.search')" size="sm" color="neutral" />
+      <ThreadsPanel
+        v-if="activePanel === 'threads'"
+        :threads="threads"
+        :counts="counts"
+        :loading="loading"
+        :has-codex-store="Boolean(codexStore)"
+        :selected-thread-id="selectedThreadId"
+        :continuation-thread-ids="continuationThreadIds"
+        :continuation-unread-thread-ids="continuationUnreadThreadIds"
+        @open="openThread"
+        @toggle-favorite="toggleFavorite"
+        @open-navigation="openThreadNavigation"
+        @continue-thread="openContinuationConfirm"
+      />
 
-          <div class="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5">
-            <UButton
-              v-for="filter in visibleFilters"
-              :key="filter.key"
-              type="button"
-              color="neutral"
-              :variant="activeFilter === filter.key ? 'subtle' : 'soft'"
-              size="sm"
-              class="flex-none"
-              @click="activeFilter = filter.key"
-            >
-              <span>{{ filter.label }}</span>
-              <span class="text-current">{{ filter.count }}</span>
-            </UButton>
-          </div>
-        </div>
+      <BookmarksPanel
+        v-else-if="activePanel === 'bookmarks'"
+        :threads="threads"
+        :turn-bookmarks="turnBookmarks"
+        :selected-thread-id="selectedThreadId"
+        :continuation-thread-ids="continuationThreadIds"
+        :continuation-unread-thread-ids="continuationUnreadThreadIds"
+        :app-locale="appLocale"
+        @open="openThread"
+        @toggle-favorite="toggleFavorite"
+        @open-navigation="openThreadNavigation"
+        @continue-thread="openContinuationConfirm"
+        @remove-turn-bookmark="removeTurnBookmark"
+        @open-turn-bookmark="openTurnBookmark"
+      />
 
-        <div class="flex min-h-0 flex-col gap-2 overflow-y-auto overflow-x-hidden pr-2.5 -mr-2.5 pb-2">
-          <div v-if="loading && !snapshot" class="flex flex-col gap-2">
-            <USkeleton v-for="index in 7" :key="index" class="h-[104px] rounded-lg" />
-          </div>
+      <ExplorationsPanel
+        v-else-if="activePanel === 'explorations'"
+        :explorations="explorations"
+        :threads="threads"
+        :app-locale="appLocale"
+        @created="handleExplorationCreated"
+        @feedback="setFeedback"
+        @open-source-thread="openThreadById"
+      />
 
-          <UEmpty
-            v-else-if="filteredThreads.length === 0"
-            :title="t('threads.emptyTitle')"
-            :description="t('threads.emptyDescription')"
-            variant="naked"
-            size="xs"
-            class="min-h-[220px] self-center"
-          />
+      <PromptsPanel
+        v-else-if="activePanel === 'prompts'"
+        :templates="promptTemplates"
+        @save="savePromptTemplates"
+        @copied="setFeedback(t('feedback.copied'))"
+        @failed="setFeedback"
+      />
 
-          <template v-else>
-            <ThreadRow
-              v-for="thread in filteredThreads"
-              :key="thread.id"
-              :thread="thread"
-              :selected="thread.id === selectedThreadId"
-              :continuing="continuationThreadId === thread.id"
-              :continue-disabled="Boolean(continuationThreadId) && continuationThreadId !== thread.id"
-              @open="openThread"
-              @toggle-favorite="toggleFavorite"
-              @open-navigation="openThreadNavigation"
-              @continue-thread="openContinuationConfirm"
-            />
-          </template>
-        </div>
-      </section>
+      <SettingsPanel
+        v-else
+        :language-mode="languageMode"
+        :language-options="languageOptions"
+        :theme-mode="themeMode"
+        :theme-options="themeOptions"
+        :show-mini-tool="showMiniTool"
+        :mini-over-dock="miniOverDock"
+        :show-mini-prompts="showMiniPrompts"
+        :exporting="exporting"
+        :importing="importing"
+        @apply-language-mode="applyLanguageMode"
+        @apply-theme-mode="applyThemeMode"
+        @apply-show-mini-tool="applyShowMiniTool"
+        @apply-mini-over-dock="applyMiniOverDock"
+        @apply-show-mini-prompts="applyShowMiniPrompts"
+        @feedback="setFeedback"
+        @export-data="exportData"
+        @import-data="importData"
+      />
 
-      <section v-else-if="activePanel === 'bookmarks'" class="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5">
-        <div class="flex min-w-0 flex-col gap-2">
-          <div class="flex gap-1 rounded-lg bg-neutral-200/70 p-0.5 dark:bg-neutral-800" role="tablist" :aria-label="t('bookmarks.typeLabel')">
-            <button
-              v-for="tab in bookmarkTabs"
-              :key="tab.key"
-              type="button"
-              class="inline-flex h-7 min-w-0 flex-1 basis-0 items-center justify-center gap-1.5 rounded-[7px] border-0 px-2 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400"
-              :class="bookmarkTab === tab.key ? 'bg-white text-gray-950 dark:bg-neutral-700 dark:text-white' : 'bg-transparent text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'"
-              role="tab"
-              :aria-selected="bookmarkTab === tab.key"
-              @click="bookmarkTab = tab.key"
-            >
-              <span>{{ tab.label }}</span>
-              <span class="text-current">{{ tab.count }}</span>
-            </button>
-          </div>
-
-          <UInput v-model="bookmarkSearchTerm" icon="i-lucide-search" :placeholder="bookmarkSearchPlaceholder" size="sm" color="neutral" />
-        </div>
-
-        <div class="flex min-h-0 flex-col gap-2 overflow-y-auto overflow-x-hidden pr-2.5 -mr-2.5 pb-2">
-          <template v-if="bookmarkTab === 'conversations'">
-            <UEmpty
-              v-if="filteredBookmarkedThreads.length === 0"
-              :title="t('bookmarks.emptyConversationsTitle')"
-              :description="t('bookmarks.emptyConversationsDescription')"
-              variant="naked"
-              size="xs"
-              class="min-h-[220px] self-center"
-            />
-
-            <template v-else>
-              <ThreadRow
-                v-for="thread in filteredBookmarkedThreads"
-                :key="thread.id"
-                :thread="thread"
-                :selected="thread.id === selectedThreadId"
-                :continuing="continuationThreadId === thread.id"
-                :continue-disabled="Boolean(continuationThreadId) && continuationThreadId !== thread.id"
-                @open="openThread"
-                @toggle-favorite="toggleFavorite"
-                @open-navigation="openThreadNavigation"
-                @continue-thread="openContinuationConfirm"
-              />
-            </template>
-          </template>
-
-          <template v-else>
-            <UEmpty
-              v-if="filteredMessageBookmarks.length === 0"
-              :title="t('bookmarks.emptyMessagesTitle')"
-              :description="t('bookmarks.emptyMessagesDescription')"
-              variant="naked"
-              size="xs"
-              class="min-h-[220px] self-center"
-            />
-
-            <template v-else>
-              <article
-                v-for="bookmark in filteredMessageBookmarks"
-                :key="bookmark.id"
-                class="flex min-w-0 flex-col gap-1.5 rounded-[9px] border border-gray-100 bg-white p-2.5 text-gray-900 dark:border-neutral-800 dark:bg-neutral-900 dark:text-gray-100"
-              >
-                <div class="flex min-w-0 items-center gap-2">
-                  <h3 class="m-0 min-w-0 flex-1 basis-0 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] leading-[1.25] font-[760] text-gray-900 dark:text-gray-100">
-                    {{ getBookmarkThreadTitle(bookmark) }}
-                  </h3>
-                  <UTooltip :text="t('bookmarks.remove')">
-                    <UButton
-                      icon="i-lucide-bookmark-x"
-                      color="neutral"
-                      variant="ghost"
-                      size="xs"
-                      square
-                      @click="removeMessageBookmark(bookmark)"
-                    />
-                  </UTooltip>
-                </div>
-
-                <button
-                  type="button"
-                  class="flex rounded-lg border-0 bg-gray-50 px-2.5 py-2 text-left text-[13px] leading-[1.45] text-gray-900 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 dark:bg-neutral-800 dark:text-gray-100 dark:hover:bg-neutral-700"
-                  @click="openMessageBookmark(bookmark)"
-                >
-                  <span class="line-clamp-3 [overflow-wrap:anywhere]">{{ bookmark.preview }}</span>
-                </button>
-
-                <div class="flex min-w-0 items-center gap-2">
-                  <span class="min-w-0 flex-1 basis-0 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] leading-[1.2] text-gray-500 dark:text-gray-400">{{ getBookmarkProjectName(bookmark) }}</span>
-                  <span class="text-[11px] leading-none whitespace-nowrap text-gray-500 dark:text-gray-400">{{ formatNavigationMessageTime(bookmark.createdAt, appLocale) }}</span>
-                </div>
-              </article>
-            </template>
-          </template>
-        </div>
-      </section>
-
-      <section v-else-if="activePanel === 'prompts'" class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <PromptManager
-          :templates="snapshot?.sidecarData.promptTemplates || []"
-          class="min-h-0 flex-1"
-          @save="savePromptTemplates"
-          @copied="setFeedback(t('feedback.copied'))"
-          @failed="setFeedback"
-        />
-      </section>
-
-      <section v-else class="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5 overflow-auto pb-2">
-        <article class="flex min-w-0 items-center justify-between gap-3 rounded-[9px] border border-default bg-white p-2.5 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
-          <div class="min-w-0 flex-1 basis-0">
-            <h3 class="m-0 text-[13px]">{{ t('settings.language') }}</h3>
-          </div>
-          <USelect
-            :model-value="languageMode"
-            :items="languageOptions"
-            value-key="value"
-            label-key="label"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            class="w-[100px] flex-none"
-            :aria-label="t('settings.language')"
-            :disabled="languageSaving"
-            @update:model-value="saveLanguageMode"
-          />
-        </article>
-
-        <article class="flex min-w-0 items-center justify-between gap-3 rounded-[9px] border border-default bg-white p-2.5 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
-          <div class="min-w-0 flex-1 basis-0">
-            <h3 class="m-0 text-[13px]">{{ t('settings.theme') }}</h3>
-          </div>
-          <div
-            ref="themeControlRef"
-            class="flex flex-none rounded-lg bg-neutral-200/70 p-0.5 dark:bg-neutral-800"
-            role="radiogroup"
-            :aria-label="t('settings.theme')"
-          >
-            <UTooltip
-              v-for="option in themeOptions"
-              :key="option.value"
-              :text="option.label"
-            >
-              <button
-                type="button"
-                class="inline-flex h-6 w-9 items-center justify-center rounded-[7px] border-0 bg-transparent text-gray-500 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 disabled:cursor-default disabled:opacity-60 dark:text-gray-400"
-                :class="themeMode === option.value ? 'bg-white text-gray-950 shadow-sm dark:bg-neutral-700 dark:text-white' : 'hover:text-gray-900 dark:hover:text-gray-100'"
-                role="radio"
-                :aria-checked="themeMode === option.value"
-                :aria-label="option.label"
-                :disabled="themeSaving"
-                @click="saveThemeMode(option.value, $event)"
-              >
-                <UIcon :name="option.icon" class="h-4 w-4" />
-              </button>
-            </UTooltip>
-          </div>
-        </article>
-
-        <article class="flex min-w-0 items-center justify-between gap-3 rounded-[9px] border border-default bg-white p-2.5 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
-          <div class="min-w-0 flex-1 basis-0">
-            <h3 class="m-0 text-[13px]">{{ t('settings.miniOverDock') }}</h3>
-          </div>
-          <USwitch
-            :model-value="miniOverDock"
-            color="neutral"
-            :disabled="miniOverDockSaving"
-            :aria-label="t('settings.miniOverDock')"
-            @update:model-value="saveMiniOverDock"
-          />
-        </article>
-
-        <article class="flex min-w-0 items-center justify-between gap-3 rounded-[9px] border border-default bg-white p-2.5 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
-          <div class="min-w-0 flex-1 basis-0">
-            <h3 class="m-0 text-[13px]">{{ t('settings.showMiniPrompts') }}</h3>
-          </div>
-          <USwitch
-            :model-value="showMiniPrompts"
-            color="neutral"
-            :disabled="showMiniPromptsSaving"
-            :aria-label="t('settings.showMiniPrompts')"
-            @update:model-value="saveShowMiniPrompts"
-          />
-        </article>
-
-        <article class="flex min-w-0 items-center justify-between gap-3 rounded-[9px] border border-default bg-white p-2.5 text-gray-900 dark:bg-neutral-900 dark:text-gray-100">
-          <div class="min-w-0 flex-1 basis-0">
-            <h3 class="m-0 text-[13px]">{{ t('settings.data') }}</h3>
-          </div>
-          <div class="flex flex-none gap-1.5">
-            <UButton color="neutral" variant="soft" size="sm" class="justify-center" :loading="exporting" :disabled="importing" @click="exportData">
-              {{ t('common.export') }}
-            </UButton>
-            <UButton color="neutral" variant="outline" size="sm" class="justify-center" :loading="importing" :disabled="exporting" @click="importData">
-              {{ t('common.import') }}
-            </UButton>
-          </div>
-        </article>
-      </section>
-
-      <nav class="-mx-3 -mb-3 mt-[-8px] flex min-w-0 flex-none gap-1 border-t border-gray-100 px-3 pt-1 pb-1 dark:border-neutral-800 dark:bg-neutral-950/95 max-[410px]:-mx-2.5 max-[410px]:-mb-2.5 max-[410px]:px-2.5" :aria-label="t('panels.ariaLabel')">
+      <nav class="-mx-3 -mb-3 mt-[-8px] flex min-w-0 flex-none gap-1 border-t border-gray-100 px-3 pt-1 pb-1 dark:border-neutral-800 max-[410px]:-mx-2.5 max-[410px]:-mb-2.5 max-[410px]:px-2.5" :aria-label="t('panels.ariaLabel')">
         <button
           v-for="panel in panels"
           :key="panel.key"
           type="button"
           class="flex h-[46px] min-w-0 flex-1 basis-0 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg border-0 px-1.5 text-[11px] leading-none font-[680] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400"
-          :class="activePanel === panel.key ? 'bg-neutral-50 text-gray-950 dark:bg-neutral-900 dark:text-white' : 'bg-transparent text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'"
+          :class="activePanel === panel.key ? 'bg-neutral-100 text-gray-950 dark:bg-neutral-800 dark:text-white' : 'bg-transparent text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'"
           :aria-current="activePanel === panel.key ? 'page' : undefined"
           @click="activePanel = panel.key"
         >
-          <UIcon :name="panel.icon" class="h-[17px] w-[17px] flex-none" />
+          <UIcon :name="panel.icon" class="size-4 flex-none" />
           <span class="truncate">{{ panel.label }}</span>
         </button>
       </nav>
@@ -370,15 +342,6 @@
       >
         <template #content>
           <div class="flex h-full min-h-0 flex-col gap-2 p-3">
-            <UAlert
-              v-if="navigationAccessibilityGranted === false"
-              color="warning"
-              variant="subtle"
-              icon="i-lucide-triangle-alert"
-              :title="t('navigation.accessibilityTitle')"
-              :description="navigationAccessibilityDescription"
-            />
-
             <div class="flex min-w-0 flex-col">
               <UInput
                 v-model="navigationSearchTerm"
@@ -400,7 +363,7 @@
               </div>
 
               <UEmpty
-                v-else-if="filteredNavigationMessages.length === 0"
+                v-else-if="filteredNavigationTurnPreviews.length === 0"
                 :title="t('navigation.empty')"
                 variant="naked"
                 size="xs"
@@ -409,31 +372,39 @@
               />
 
               <div
-                v-for="message in filteredNavigationMessages"
-                :key="message.id"
-                class="flex flex-col items-end gap-1 self-end"
+                v-for="turnPreview in filteredNavigationTurnPreviews"
+                :key="turnPreview.id"
+                class="flex max-w-full flex-col items-end gap-1 self-end"
               >
-                <span class="self-end text-[10px] leading-none whitespace-nowrap text-gray-500 dark:text-gray-400">{{ formatNavigationMessageTime(message.createdAt, appLocale) }}</span>
-                <div class="flex items-start justify-end gap-1.5">
-                  <UTooltip :text="isNavigationMessageBookmarked(message) ? t('bookmarks.remove') : t('bookmarks.add')">
+                <span class="self-end text-[10px] leading-none whitespace-nowrap text-gray-500 dark:text-gray-400">{{ formatNavigationMessageTime(turnPreview.createdAt, appLocale) }}</span>
+                <div class="flex max-w-full items-start justify-end gap-1.5">
+                  <UTooltip :text="isNavigationTurnBookmarked(turnPreview) ? t('bookmarks.removeTurn') : t('bookmarks.addTurn')">
                     <UButton
                       icon="i-lucide-bookmark"
-                      :color="isNavigationMessageBookmarked(message) ? 'warning' : 'neutral'"
-                      :variant="isNavigationMessageBookmarked(message) ? 'soft' : 'ghost'"
+                      :color="isNavigationTurnBookmarked(turnPreview) ? 'warning' : 'neutral'"
+                      :variant="isNavigationTurnBookmarked(turnPreview) ? 'soft' : 'ghost'"
                       size="xs"
                       square
-                      @click="toggleNavigationMessageBookmark(message)"
+                      @click="toggleNavigationTurnBookmark(turnPreview)"
                     />
                   </UTooltip>
-                  <button
-                    type="button"
-                    class="flex min-w-0 rounded-xl border-0 bg-gray-100 px-3 py-2 text-left text-[13px] leading-[1.45] text-gray-900 hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 dark:bg-neutral-800 dark:text-gray-100 dark:hover:bg-neutral-700"
-                    :class="navigationJumping ? 'cursor-wait opacity-60' : 'cursor-pointer'"
-                    :disabled="navigationJumping"
-                    @click="jumpToUserMessage(message)"
-                  >
-                    <span class="line-clamp-2 [overflow-wrap:anywhere]">{{ message.preview }}</span>
-                  </button>
+                  <div class="flex min-w-0 max-w-[86%] flex-col items-end gap-1">
+                    <button
+                      type="button"
+                      class="flex max-w-full rounded-xl border-0 bg-gray-100 px-3 py-2 text-left text-[13px] leading-[1.45] text-gray-900 hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 dark:bg-neutral-800 dark:text-gray-100 dark:hover:bg-neutral-700"
+                      :class="navigationJumping ? 'cursor-wait opacity-60' : 'cursor-pointer'"
+                      :disabled="navigationJumping"
+                      @click="openNavigationThread"
+                    >
+                      <span class="line-clamp-2 [overflow-wrap:anywhere]">{{ turnPreview.userPreview }}</span>
+                    </button>
+                    <div
+                      v-if="turnPreview.assistantPreview"
+                      class="flex max-w-full rounded-xl bg-gray-50 px-3 py-2 text-left text-[13px] leading-[1.45] text-gray-700 dark:bg-neutral-900 dark:text-gray-300"
+                    >
+                      <span class="line-clamp-3 [overflow-wrap:anywhere]">{{ turnPreview.assistantPreview }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -458,34 +429,57 @@
           </div>
         </template>
         <template #footer>
-          <div class="flex w-full flex-wrap justify-end gap-1.5">
-            <UButton
-              color="neutral"
-              variant="ghost"
-              size="sm"
-              :disabled="Boolean(continuationThreadId)"
-              @click="closeContinuationConfirm"
+          <div class="flex w-full flex-wrap items-center gap-1.5">
+            <UTooltip
+              v-if="pendingContinuationResult"
+              :text="formatContinuationGeneratedAt(pendingContinuationResult.completedAt)"
+              :content="{ side: 'top' }"
             >
-              {{ t('common.cancel') }}
-            </UButton>
-            <UButton
-              color="neutral"
-              size="sm"
-              :loading="Boolean(continuationThreadId)"
-              :disabled="!pendingContinuationThread"
-              @click="confirmContinueThreadWithSummary"
-            >
-              {{ t('continuation.confirm') }}
-            </UButton>
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="sm"
+                icon="i-lucide-copy"
+                @click="copyLastContinuation"
+              >
+                {{ t('continuation.copyLast') }}
+              </UButton>
+            </UTooltip>
+            <div class="ml-auto flex flex-wrap justify-end gap-1.5">
+              <UButton
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                @click="closeContinuationConfirm"
+              >
+                {{ t('common.cancel') }}
+              </UButton>
+              <UButton
+                color="neutral"
+                size="sm"
+                :disabled="!pendingContinuationThread"
+                @click="confirmContinueThreadWithSummary"
+              >
+                {{ pendingContinuationResult ? t('continuation.regenerate') : t('continuation.confirm') }}
+              </UButton>
+            </div>
           </div>
         </template>
       </UModal>
 
-      <div v-if="feedback" class="absolute right-3 bottom-[72px] left-3 z-[5] rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs text-gray-900 shadow-[0_12px_28px_rgba(17,24,39,0.16)] dark:border-sky-500/30 dark:bg-sky-950 dark:text-sky-100">
-        {{ feedback }}
-      </div>
+      </template>
       </main>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="feedback && (mode === 'full' || mode === 'exploration-result')"
+        class="pointer-events-none fixed left-1/2 z-[999999] w-fit max-w-[calc(100%-24px)] -translate-x-1/2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-center text-xs text-gray-900 shadow-[0_12px_28px_rgba(17,24,39,0.16)] [overflow-wrap:anywhere] dark:border-sky-500/30 dark:bg-sky-950 dark:text-sky-100"
+        :class="mode === 'exploration-result' ? 'bottom-3' : 'bottom-[72px]'"
+      >
+        {{ feedback }}
+      </div>
+    </Teleport>
   </UApp>
 </template>
 
@@ -493,89 +487,99 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import MiniBar from '@/components/MiniBar.vue'
+import BookmarksPanel from '@/components/panels/BookmarksPanel.vue'
+import ExplorationsPanel from '@/components/panels/ExplorationsPanel.vue'
+import MarkdownBlock from '@/components/MarkdownBlock.vue'
+import PromptsPanel from '@/components/panels/PromptsPanel.vue'
+import SettingsPanel from '@/components/panels/SettingsPanel.vue'
+import ThreadsPanel from '@/components/panels/ThreadsPanel.vue'
 import PopupMenu from '@/components/PopupMenu.vue'
-import PromptManager from '@/components/PromptManager.vue'
-import ThreadRow from '@/components/ThreadRow.vue'
 import UsageMeter from '@/components/UsageMeter.vue'
 import { applyI18nLanguageMode } from '@/i18n'
-import type { AppLocale, FavoriteItem, LanguageMode, MessageBookmark, PopupMenuData, PopupMenuShowOptions, PromptTemplate, SidecarData, SidecarSettings, SidecarSnapshot, ThemeMode, ThreadSummary, ThreadUserMessagePreview, UsageDisplayMode } from '@/types/sidecar'
-import { formatNavigationMessageTime } from '@/utils/format'
+import type { AppLocale, CodexStore, ExplorationCandidate, ExplorationRun, FavoriteItem, LanguageMode, PopupMenuData, PopupMenuShowOptions, PromptTemplate, SidecarData, SidecarHookStatus, ThemeMode, ThreadContinuationResult, ThreadSummary, ThreadTurnPreview, TurnBookmark, UsageDisplayMode } from '@/types/sidecar'
+import { formatNavigationMessageTime, formatResetDateTime } from '@/utils/format'
 
 type StatusTileKey = 'completedUnread' | 'running' | 'waiting' | 'failed'
-type FilterKey = 'all' | StatusTileKey | 'contextRisk'
-type PanelKey = 'threads' | 'bookmarks' | 'prompts' | 'data'
-type BookmarkTabKey = 'conversations' | 'messages'
+type PanelKey = 'threads' | 'bookmarks' | 'explorations' | 'prompts' | 'data'
 type StatusTileTone = 'completed' | 'running' | 'waiting' | 'failed'
-type WindowMode = 'mini' | 'full' | 'popup-menu'
-
+type WindowMode = 'mini' | 'full' | 'popup-menu' | 'exploration-result'
+type ExplorationResultTabKey = 'summary' | `candidate:${string}`
+const HOOK_STATUS_REFRESH_MS = 2500
 const getInitialWindowMode = (): WindowMode => {
   try {
     const windowMode = new URLSearchParams(window.location.search).get('windowMode')
 
-    return windowMode === 'mini' || windowMode === 'popup-menu' ? windowMode : 'full'
+    return windowMode === 'mini' || windowMode === 'popup-menu' || windowMode === 'exploration-result' ? windowMode : 'full'
   } catch {
     return 'full'
   }
 }
 
-const snapshot = ref<SidecarSnapshot | null>(null)
+const getInitialExplorationId = () => {
+  try {
+    return new URLSearchParams(window.location.search).get('explorationId') || ''
+  } catch {
+    return ''
+  }
+}
+
+const codexStore = ref<CodexStore | null>(null)
+const promptTemplates = ref<PromptTemplate[]>([])
 const bookmarkItems = ref<FavoriteItem[]>([])
+const explorations = ref<ExplorationRun[]>([])
 const loading = ref(false)
 const exporting = ref(false)
 const importing = ref(false)
 const languageMode = ref<LanguageMode>('auto')
-const languageSaving = ref(false)
 const themeMode = ref<ThemeMode>('auto')
-const themeSaving = ref(false)
 const miniOverDock = ref(true)
-const miniOverDockSaving = ref(false)
+const showMiniTool = ref(true)
 const showMiniPrompts = ref(true)
-const showMiniPromptsSaving = ref(false)
+const hookStatus = ref<SidecarHookStatus | null>(null)
 const mode = ref<WindowMode>(getInitialWindowMode())
 const modeSwitching = ref(false)
-const activeFilter = ref<FilterKey>('all')
 const activePanel = ref<PanelKey>('threads')
-const bookmarkTab = ref<BookmarkTabKey>('conversations')
-const searchTerm = ref('')
-const bookmarkSearchTerm = ref('')
 const selectedThreadId = ref('')
-const continuationThreadId = ref('')
+const continuationThreadIds = ref<string[]>([])
 const continuationConfirmOpen = ref(false)
 const pendingContinuationThread = ref<ThreadSummary | null>(null)
+const continuationResults = ref<Record<string, ThreadContinuationResult>>({})
 const feedback = ref('')
 const usageMode = ref<UsageDisplayMode>('used')
 const navigationOpen = ref(false)
 const navigationLoading = ref(false)
 const navigationJumping = ref(false)
-const navigationAccessibilityGranted = ref<boolean | null>(null)
-const navigationAccessibilityError = ref('')
 const navigationThreadId = ref('')
 const navigationSearchTerm = ref('')
-const navigationMessages = ref<ThreadUserMessagePreview[]>([])
+const navigationTurnPreviews = ref<ThreadTurnPreview[]>([])
 const navigationError = ref('')
 const popupMenu = ref<PopupMenuData | null>(null)
+const explorationResultRun = ref<ExplorationRun | null>(null)
+const explorationResultTab = ref<ExplorationResultTabKey>('summary')
+const explorationResultLoading = ref(false)
+const explorationResultError = ref('')
 const navigationListRef = ref<HTMLElement | null>(null)
-const themeControlRef = ref<HTMLElement | null>(null)
 let refreshTimer: number | undefined
+let hookStatusTimer: number | undefined
+let explorationResultTimer: number | undefined
 let feedbackTimer: number | undefined
-let unsubscribeSnapshot: (() => void) | undefined
+let unsubscribeCodexStore: (() => void) | undefined
+let unsubscribeExplorationsChanged: (() => void) | undefined
+let unsubscribeSidecarDataChanged: (() => void) | undefined
+let unsubscribeHookStatusChanged: (() => void) | undefined
 let unsubscribeWindowMode: (() => void) | undefined
+let unsubscribeSelectPanel: (() => void) | undefined
 let unsubscribePopupMenuData: (() => void) | undefined
 let systemThemeMediaQuery: MediaQueryList | undefined
-let snapshotRequestId = 0
+let codexStoreRequestId = 0
+let hookStatusRequestId = 0
 let navigationRequestId = 0
-let navigationAccessibilityRequestId = 0
+let explorationResultRequestId = 0
 let bookmarkMutationVersion = 0
-let languageMutationVersion = 0
-let themeMutationVersion = 0
-let miniOverDockMutationVersion = 0
-let showMiniPromptsMutationVersion = 0
 const bookmarkMutationVersionByKey = new Map<string, number>()
 const { t, locale } = useI18n()
 const appLocale = computed<AppLocale>(() => locale.value === 'zh' ? 'zh' : 'en')
-
-const isLanguageMode = (value: unknown): value is LanguageMode => value === 'auto' || value === 'en' || value === 'zh'
-const isThemeMode = (value: unknown): value is ThemeMode => value === 'auto' || value === 'light' || value === 'dark'
+const initialExplorationId = getInitialExplorationId()
 
 const languageOptions = computed(() => [
   { value: 'auto' as const, label: t('settings.languageOptions.auto') },
@@ -589,6 +593,32 @@ const themeOptions = computed(() => [
   { value: 'dark' as const, label: t('settings.themeOptions.dark'), icon: 'i-lucide-moon' }
 ])
 
+const showHookSetup = computed(() => mode.value === 'full' && hookStatus.value !== null && !hookStatus.value.ready)
+
+const hookSetupStatusText = computed(() => {
+  const status = hookStatus.value
+
+  if (!status || status.ready) {
+    return ''
+  }
+
+  if (status.issue === 'untrusted') {
+    return t('hookSetup.status.untrusted')
+  }
+
+  if (status.issue === 'disabled') {
+    return t('hookSetup.status.disabled')
+  }
+
+  return t('hookSetup.status.missing')
+})
+
+const hookSetupSteps = computed(() => [
+  { index: 1, label: t('hookSetup.steps.openSettings') },
+  { index: 2, label: t('hookSetup.steps.openHooks') },
+  { index: 3, label: t('hookSetup.steps.trustHooks') }
+])
+
 function getFavoriteKey(item: FavoriteItem) {
   return `${item.type}:${item.id}`
 }
@@ -597,12 +627,12 @@ function getThreadFavoriteKey(threadId: string) {
   return `thread:${threadId}`
 }
 
-function getMessageBookmarkId(threadId: string, messageId: string) {
-  return `${threadId}:${messageId}`
+function getTurnBookmarkId(threadId: string, turnId: string) {
+  return `${threadId}:${turnId}`
 }
 
-function getMessageFavoriteKey(threadId: string, messageId: string) {
-  return `message:${getMessageBookmarkId(threadId, messageId)}`
+function getTurnFavoriteKey(threadId: string, turnId: string) {
+  return `turn:${getTurnBookmarkId(threadId, turnId)}`
 }
 
 const favoriteItemsByKey = computed(() => new Map<string, FavoriteItem>(
@@ -611,13 +641,34 @@ const favoriteItemsByKey = computed(() => new Map<string, FavoriteItem>(
 
 const isFavoriteActive = (key: string) => favoriteItemsByKey.value.has(key)
 
-const threads = computed<ThreadSummary[]>(() => (snapshot.value?.threads || []).map(thread => ({
+const threads = computed<ThreadSummary[]>(() => (codexStore.value?.threads || []).map(thread => ({
   ...thread,
   favorite: isFavoriteActive(getThreadFavoriteKey(thread.id))
 })))
 const selectedThread = computed(() => threads.value.find(thread => thread.id === selectedThreadId.value) || null)
 const navigationThread = computed(() => threads.value.find(thread => thread.id === navigationThreadId.value) || null)
-const messageBookmarks = computed(() => bookmarkItems.value.filter((item): item is MessageBookmark => item.type === 'message'))
+const turnBookmarks = computed(() => bookmarkItems.value.filter((item): item is TurnBookmark => item.type === 'turn'))
+const getCurrentContinuationResult = (thread: ThreadSummary) => {
+  const result = continuationResults.value[thread.id]
+
+  if (!result || result.sourceUpdatedAt !== thread.updatedAt) {
+    return null
+  }
+
+  return result
+}
+const pendingContinuationResult = computed(() => {
+  const thread = pendingContinuationThread.value
+
+  if (!thread) {
+    return null
+  }
+
+  return getCurrentContinuationResult(threads.value.find(item => item.id === thread.id) || thread)
+})
+const continuationUnreadThreadIds = computed(() => threads.value
+  .filter(thread => getCurrentContinuationResult(thread)?.unread)
+  .map(thread => thread.id))
 
 const counts = computed(() => ({
   completedUnread: threads.value.filter(thread => thread.sidecarStatus === 'completedUnread').length,
@@ -626,13 +677,14 @@ const counts = computed(() => ({
   failed: threads.value.filter(thread => thread.sidecarStatus === 'failed').length,
   contextRisk: threads.value.filter(thread => (thread.contextUsage?.percent || 0) >= 75).length,
   favorite: threads.value.filter(thread => thread.favorite).length,
-  messageBookmark: messageBookmarks.value.length,
+  turnBookmark: turnBookmarks.value.length,
   all: threads.value.length
 }))
 
 const panels = computed<Array<{ key: PanelKey, label: string, icon: string }>>(() => [
   { key: 'threads', label: t('panels.threads'), icon: 'i-lucide-message-square-code' },
   { key: 'bookmarks', label: t('panels.bookmarks'), icon: 'i-lucide-bookmark' },
+  { key: 'explorations', label: t('panels.explorations'), icon: 'i-lucide-sparkles' },
   { key: 'prompts', label: t('panels.prompts'), icon: 'i-lucide-pencil-sparkles' },
   { key: 'data', label: t('panels.settings'), icon: 'i-lucide-settings' }
 ])
@@ -645,6 +697,16 @@ const statusTiles = computed<Array<{ key: StatusTileKey, label: string, tooltip:
 ])
 
 const formatStatusCount = (count: number) => count > 99 ? '99' : String(count)
+
+const formatContinuationGeneratedAt = (value: number | null | undefined) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return t('continuation.generatedAtUnknown')
+  }
+
+  return t('continuation.generatedAt', {
+    time: formatResetDateTime(value, appLocale.value)
+  })
+}
 
 const statusTileDotClass = (tone: StatusTileTone) => {
   if (tone === 'completed') {
@@ -676,116 +738,10 @@ const statusTilePingClass = (tone: StatusTileTone) => {
   return ''
 }
 
-const visibleFilters = computed<Array<{ key: FilterKey, label: string, count: number }>>(() => [
-  { key: 'all', label: t('filters.all'), count: counts.value.all },
-  { key: 'running', label: t('filters.running'), count: counts.value.running },
-  { key: 'waiting', label: t('filters.waiting'), count: counts.value.waiting },
-  { key: 'completedUnread', label: t('filters.completedUnread'), count: counts.value.completedUnread },
-  { key: 'failed', label: t('filters.failed'), count: counts.value.failed }
-])
-
-const filteredThreads = computed(() => {
-  const term = searchTerm.value.trim().toLowerCase()
-
-  return threads.value.filter(thread => {
-    if (activeFilter.value === 'completedUnread' && thread.sidecarStatus !== 'completedUnread') {
-      return false
-    }
-
-    if (activeFilter.value === 'running' && thread.sidecarStatus !== 'running') {
-      return false
-    }
-
-    if (activeFilter.value === 'waiting' && thread.sidecarStatus !== 'waiting') {
-      return false
-    }
-
-    if (activeFilter.value === 'failed' && thread.sidecarStatus !== 'failed') {
-      return false
-    }
-
-    if (activeFilter.value === 'contextRisk' && (thread.contextUsage?.percent || 0) < 75) {
-      return false
-    }
-
-    if (!term) {
-      return true
-    }
-
-    return [
-      thread.title,
-      thread.codexTitle,
-      thread.projectName,
-      thread.cwd,
-      thread.lastUserMessagePreview,
-      thread.recentActivity,
-      thread.preview,
-      thread.id
-    ].some(value => String(value || '').toLowerCase().includes(term))
-  })
-})
-
-const bookmarkTabs = computed<Array<{ key: BookmarkTabKey, label: string, count: number }>>(() => [
-  { key: 'conversations', label: t('bookmarks.conversations'), count: counts.value.favorite },
-  { key: 'messages', label: t('bookmarks.messages'), count: counts.value.messageBookmark }
-])
-
-const favoriteThreads = computed(() => threads.value.filter(thread => thread.favorite))
-
-const bookmarkSearchPlaceholder = computed(() => {
-  return bookmarkTab.value === 'conversations'
-    ? t('bookmarks.searchConversations')
-    : t('bookmarks.searchMessages')
-})
-
-const filteredBookmarkedThreads = computed(() => {
-  const term = bookmarkSearchTerm.value.trim().toLowerCase()
-
-  return favoriteThreads.value.filter(thread => {
-    if (!term) {
-      return true
-    }
-
-    return [
-      thread.title,
-      thread.codexTitle,
-      thread.projectName,
-      thread.cwd,
-      thread.lastUserMessagePreview,
-      thread.recentActivity,
-      thread.preview,
-      thread.id
-    ].some(value => String(value || '').toLowerCase().includes(term))
-  })
-})
-
-const getBookmarkedThread = (bookmark: MessageBookmark) => threads.value.find(thread => thread.id === bookmark.threadId) || null
-
-const getBookmarkThreadTitle = (bookmark: MessageBookmark) => getBookmarkedThread(bookmark)?.title || bookmark.threadTitle || t('common.unnamedThread')
-
-const getBookmarkProjectName = (bookmark: MessageBookmark) => getBookmarkedThread(bookmark)?.projectName || bookmark.projectName || t('common.unnamedProject')
-
-const filteredMessageBookmarks = computed(() => {
-  const term = bookmarkSearchTerm.value.trim().toLowerCase()
-
-  return messageBookmarks.value.filter(bookmark => {
-    if (!term) {
-      return true
-    }
-
-    return [
-      bookmark.preview,
-      bookmark.searchText,
-      getBookmarkThreadTitle(bookmark),
-      getBookmarkProjectName(bookmark),
-      bookmark.cwd,
-      bookmark.threadId
-    ].some(value => String(value || '').toLowerCase().includes(term))
-  })
-})
+const isExplorationFinal = (run: ExplorationRun) => run.status === 'completed' || run.status === 'partialFailed' || run.status === 'failed'
 
 const usageWarning = computed(() => {
-  const windows = [snapshot.value?.rateLimits?.primary, snapshot.value?.rateLimits?.secondary].filter(Boolean)
+  const windows = [codexStore.value?.rateLimits?.primary, codexStore.value?.rateLimits?.secondary].filter(Boolean)
   const lowest = windows.reduce<number | null>((current, item) => {
     if (!item) {
       return current
@@ -813,22 +769,194 @@ const usageWarning = computed(() => {
   }
 })
 
-const navigationAccessibilityDescription = computed(() => {
-  if (navigationAccessibilityError.value) {
-    return navigationAccessibilityError.value
-  }
-
-  return t('navigation.accessibilityDescription')
-})
-
-const filteredNavigationMessages = computed(() => {
+const filteredNavigationTurnPreviews = computed(() => {
   const term = navigationSearchTerm.value.trim().toLowerCase()
 
   if (!term) {
-    return navigationMessages.value
+    return navigationTurnPreviews.value
   }
 
-  return navigationMessages.value.filter(message => message.preview.toLowerCase().includes(term))
+  return navigationTurnPreviews.value.filter(turnPreview => [
+    turnPreview.userPreview,
+    turnPreview.assistantPreview
+  ].some(value => value.toLowerCase().includes(term)))
+})
+
+const explorationResultTabs = computed<Array<{ key: ExplorationResultTabKey, label: string }>>(() => {
+  const run = explorationResultRun.value
+
+  if (!run) {
+    return []
+  }
+
+  return [
+    { key: 'summary', label: t('explorations.summary') },
+    ...run.candidates.map(candidate => ({
+      key: `candidate:${candidate.id}` as const,
+      label: t('explorations.candidate', { index: candidate.index + 1 })
+    }))
+  ]
+})
+
+const selectedExplorationCandidate = computed<ExplorationCandidate | null>(() => {
+  const run = explorationResultRun.value
+
+  if (!run || !explorationResultTab.value.startsWith('candidate:')) {
+    return null
+  }
+
+  const candidateId = explorationResultTab.value.slice('candidate:'.length)
+  return run.candidates.find(candidate => candidate.id === candidateId) || null
+})
+
+const explorationResultSourceLabel = computed(() => {
+  const run = explorationResultRun.value
+
+  if (!run?.sourceThreadId) {
+    return ''
+  }
+
+  return run.sourceThreadTitle || run.sourceThreadId
+})
+
+const explorationResultPromptText = computed(() => {
+  const run = explorationResultRun.value
+
+  if (!run) {
+    return ''
+  }
+
+  const prompt = run.prompt.trim()
+
+  if (prompt) {
+    return prompt
+  }
+
+  if (run.images.length > 0) {
+    return t('explorations.imageOnlyRequest', { count: run.images.length })
+  }
+
+  return t('explorations.emptyRequest')
+})
+
+const selectedExplorationResultText = computed(() => {
+  const run = explorationResultRun.value
+
+  if (!run) {
+    return ''
+  }
+
+  if (explorationResultTab.value === 'summary') {
+    return run.summary.output.trim()
+  }
+
+  const candidate = selectedExplorationCandidate.value
+
+  if (!candidate) {
+    return ''
+  }
+
+  return candidate.output.trim() || candidate.error || ''
+})
+
+const selectedExplorationAnalysisText = computed(() => {
+  const run = explorationResultRun.value
+
+  if (!run) {
+    return ''
+  }
+
+  if (explorationResultTab.value === 'summary') {
+    return run.summary.output.trim()
+  }
+
+  return selectedExplorationCandidate.value?.output.trim() || ''
+})
+
+const createContinuationPromptText = (summary: string, targetLocale: AppLocale) => {
+  const normalizedSummary = summary.trim()
+
+  if (!normalizedSummary) {
+    return ''
+  }
+
+  if (targetLocale === 'zh') {
+    return [
+      '以下是从旧 Codex 对话生成的接续摘要。请把它作为本对话的初始上下文。你不能假设自己还能访问旧对话完整历史；如果需要确认事实，请读取当前仓库文件或让我提供证据。',
+      '如果摘要中包含原线程 ID，它只作为追溯线索；不要依赖一定能按 ID 读取旧对话原文。',
+      '后续回答语言请根据用户明确要求、原始问题、历史对话上下文和目标产物自动判断；不要根据本段接续说明的语言决定回答语言。',
+      '',
+      '<接续摘要>',
+      normalizedSummary,
+      '</接续摘要>',
+      '',
+      '请先完整理解以上接续摘要，把它作为当前对话上下文；如果本条消息没有新的明确任务，请等待我下一步指令。'
+    ].join('\n')
+  }
+
+  return [
+    'The following is a continuation summary generated from an earlier Codex conversation. Use it as the initial context for this conversation. Do not assume you can access the full previous conversation; if facts need to be confirmed, read the current repository files or ask me for evidence.',
+    'If the summary includes an original thread ID, treat it only as a traceability hint. Do not rely on being able to read the old conversation by ID.',
+    "Decide the response language from the user's explicit request, the original request, conversation context, and target artifact. Do not use the language of these continuation instructions as the response-language signal.",
+    '',
+    '<Continuation Summary>',
+    normalizedSummary,
+    '</Continuation Summary>',
+    '',
+    'First fully understand the continuation summary above and use it as the context for this conversation. If this message does not include a new explicit task, wait for my next instruction.'
+  ].join('\n')
+}
+
+const selectedExplorationContinuationText = computed(() => {
+  const run = explorationResultRun.value
+  const analysis = selectedExplorationAnalysisText.value
+
+  if (!run || !analysis) {
+    return ''
+  }
+
+  const isZh = appLocale.value === 'zh'
+  const prompt = run.prompt.trim() || (isZh ? '用户未输入文本，只上传了图片。' : 'The user did not enter text and only uploaded images.')
+  const imageBlock = run.images.length > 0
+    ? [
+        '',
+        isZh ? '<原始图片>' : '<Original Images>',
+        isZh
+          ? `本次任务包含 ${run.images.length} 张图片；如果继续工作需要图片内容，我会重新上传或补充说明。`
+          : `This task included ${run.images.length} image(s). If continuing requires image content, I will upload them again or provide details.`,
+        isZh ? '</原始图片>' : '</Original Images>'
+      ].join('\n')
+    : ''
+
+  return [
+    isZh ? '请基于下面内容继续工作。' : 'Please continue based on the content below.',
+    '',
+    isZh ? '<原始问题>' : '<Original Request>',
+    prompt,
+    isZh ? '</原始问题>' : '</Original Request>',
+    imageBlock,
+    '',
+    isZh ? '<已有分析>' : '<Existing Analysis>',
+    analysis,
+    isZh ? '</已有分析>' : '</Existing Analysis>',
+    '',
+    isZh
+      ? '后续回答语言请根据用户明确要求、原始问题、历史对话上下文和目标产物自动判断；不要根据本段接续说明的语言决定回答语言。'
+      : "Decide the response language from the user's explicit request, the original request, conversation context, and target artifact. Do not use the language of these continuation instructions as the response-language signal.",
+    '',
+    isZh
+      ? '这段已有分析仅供参考；后续以原始问题、当前仓库事实和我补充的信息为准。请先确认你理解当前任务状态，然后等待我的下一步指令。'
+      : 'Use the existing analysis as reference only. For next steps, rely on the original request, current repository facts, and any additional information I provide. First confirm that you understand the current task state, then wait for my next instruction.'
+  ].filter(Boolean).join('\n')
+})
+
+const selectedExplorationResultEmptyText = computed(() => {
+  if (explorationResultTab.value === 'summary') {
+    return explorationResultRun.value?.summary.error || t('explorations.resultPending')
+  }
+
+  const candidate = selectedExplorationCandidate.value
+  return candidate?.error || t('explorations.resultPending')
 })
 
 const toggleUsageMode = () => {
@@ -885,15 +1013,14 @@ const getPromptMenuDescription = (template: PromptTemplate) => {
 }
 
 const handleMiniPromptsClick = async (event?: MouseEvent) => {
-  const promptTemplates = snapshot.value?.sidecarData.promptTemplates || []
-
-  if (promptTemplates.length === 0) {
+  if (promptTemplates.value.length === 0) {
+    await setMode('full', { activePanel: 'prompts' })
     return
   }
 
   try {
     const result = await window.sidecar.showPopupMenu({
-      items: promptTemplates.map(template => ({
+      items: promptTemplates.value.map(template => ({
         id: template.id,
         label: template.name || t('common.unnamedPrompt'),
         description: getPromptMenuDescription(template)
@@ -901,7 +1028,7 @@ const handleMiniPromptsClick = async (event?: MouseEvent) => {
       point: getMenuPopupPoint(event),
       width: 340
     })
-    const selectedTemplate = promptTemplates.find(template => template.id === result.selectedId)
+    const selectedTemplate = promptTemplates.value.find(template => template.id === result.selectedId)
 
     if (selectedTemplate) {
       await window.sidecar.copyText(selectedTemplate.body)
@@ -909,6 +1036,96 @@ const handleMiniPromptsClick = async (event?: MouseEvent) => {
     }
   } catch (error) {
     setFeedback(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const copyCurrentExplorationResult = async () => {
+  const text = selectedExplorationResultText.value
+
+  if (!text) {
+    return
+  }
+
+  try {
+    await window.sidecar.copyText(text)
+    setFeedback(t('feedback.copied'))
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const copyCurrentExplorationContinuation = async () => {
+  const text = selectedExplorationContinuationText.value
+
+  if (!text) {
+    return
+  }
+
+  try {
+    await window.sidecar.copyText(text)
+    setFeedback(t('feedback.copied'))
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const copyLastContinuation = async () => {
+  const result = pendingContinuationResult.value
+
+  if (!result) {
+    return
+  }
+
+  try {
+    await window.sidecar.copyText(createContinuationPromptText(result.summary, appLocale.value))
+    setFeedback(t('feedback.copied'))
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const loadExplorationResult = async () => {
+  if (!initialExplorationId) {
+    explorationResultError.value = t('explorations.missingResult')
+    return
+  }
+
+  const requestId = ++explorationResultRequestId
+  explorationResultLoading.value = true
+  explorationResultError.value = ''
+
+  try {
+    const run = await window.sidecar.getExplorationRun(initialExplorationId)
+
+    if (requestId !== explorationResultRequestId) {
+      return
+    }
+
+    explorationResultRun.value = run
+
+    if (!run) {
+      explorationResultError.value = t('explorations.missingResult')
+      return
+    }
+
+    if (isExplorationFinal(run) && explorationResultTimer) {
+      window.clearInterval(explorationResultTimer)
+      explorationResultTimer = undefined
+    }
+
+    const tabKeys = new Set(explorationResultTabs.value.map(tab => tab.key))
+
+    if (!tabKeys.has(explorationResultTab.value)) {
+      explorationResultTab.value = 'summary'
+    }
+  } catch (error) {
+    if (requestId === explorationResultRequestId) {
+      explorationResultError.value = error instanceof Error ? error.message : String(error)
+    }
+  } finally {
+    if (requestId === explorationResultRequestId) {
+      explorationResultLoading.value = false
+    }
   }
 }
 
@@ -924,40 +1141,89 @@ const setFeedback = (message: string) => {
   }, 2600)
 }
 
-const applySnapshot = (nextSnapshot: SidecarSnapshot) => {
-  syncSettingsFromSnapshot(nextSnapshot.sidecarData.settings)
+const shouldPollHookStatus = () => mode.value === 'full' && hookStatus.value !== null && !hookStatus.value.ready
 
-  snapshot.value = {
-    ...nextSnapshot,
-    sidecarData: {
-      ...nextSnapshot.sidecarData,
-      favorites: []
+const stopHookStatusPolling = () => {
+  if (hookStatusTimer) {
+    window.clearInterval(hookStatusTimer)
+    hookStatusTimer = undefined
+  }
+}
+
+const syncHookStatusPolling = () => {
+  if (!shouldPollHookStatus()) {
+    stopHookStatusPolling()
+    return
+  }
+
+  if (!hookStatusTimer) {
+    hookStatusTimer = window.setInterval(() => {
+      void loadHookStatus()
+    }, HOOK_STATUS_REFRESH_MS)
+  }
+}
+
+const applyHookStatus = (nextHookStatus: SidecarHookStatus) => {
+  hookStatus.value = nextHookStatus
+  syncHookStatusPolling()
+}
+
+const loadHookStatus = async (options?: { refresh?: boolean }) => {
+  const requestId = ++hookStatusRequestId
+
+  try {
+    const nextHookStatus = await window.sidecar.getHookStatus(options)
+
+    if (requestId === hookStatusRequestId) {
+      applyHookStatus(nextHookStatus)
+    }
+  } catch (error) {
+    if (requestId === hookStatusRequestId) {
+      setFeedback(error instanceof Error ? error.message : String(error))
     }
   }
 }
 
-const refreshSnapshot = async () => {
-  const requestId = ++snapshotRequestId
+const openCodexSettings = async () => {
+  try {
+    await window.sidecar.openCodexSettings()
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const handleWindowFocus = () => {
+  if (shouldPollHookStatus()) {
+    void loadHookStatus()
+  }
+}
+
+const applyCodexStore = (nextCodexStore: CodexStore) => {
+  codexStore.value = nextCodexStore
+}
+
+const refreshCodexStore = async () => {
+  const requestId = ++codexStoreRequestId
   loading.value = true
 
   try {
-    const nextSnapshot = await window.sidecar.getSnapshot()
+    const nextCodexStore = await window.sidecar.getCodexStore()
 
-    if (requestId === snapshotRequestId) {
-      applySnapshot(nextSnapshot)
+    if (requestId === codexStoreRequestId) {
+      applyCodexStore(nextCodexStore)
     }
   } catch (error) {
-    if (requestId === snapshotRequestId) {
+    if (requestId === codexStoreRequestId) {
       setFeedback(error instanceof Error ? error.message : String(error))
     }
   } finally {
-    if (requestId === snapshotRequestId) {
+    if (requestId === codexStoreRequestId) {
       loading.value = false
     }
   }
 }
 
-const setMode = async (nextMode: WindowMode) => {
+const setMode = async (nextMode: WindowMode, options?: { activePanel?: PanelKey }) => {
   if (mode.value === nextMode || modeSwitching.value) {
     return
   }
@@ -966,11 +1232,19 @@ const setMode = async (nextMode: WindowMode) => {
   await nextTick()
 
   try {
-    await window.sidecar.setWindowMode(nextMode)
+    await window.sidecar.setWindowMode(nextMode, options)
   } catch (error) {
     setFeedback(error instanceof Error ? error.message : String(error))
   } finally {
     modeSwitching.value = false
+  }
+}
+
+const showMainWindow = async () => {
+  try {
+    await window.sidecar.showMainWindow()
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -994,16 +1268,16 @@ const toPlainFavoriteItem = (item: FavoriteItem): FavoriteItem => {
   }
 
   return {
-    type: 'message',
+    type: 'turn',
     id: item.id,
     threadId: item.threadId,
-    messageId: item.messageId,
     turnId: item.turnId,
-    itemId: item.itemId,
-    index: item.index,
-    preview: item.preview,
-    searchText: item.searchText,
-    messageCreatedAt: item.messageCreatedAt,
+    userItemId: item.userItemId,
+    userPreview: item.userPreview,
+    userSearchText: item.userSearchText,
+    assistantItemId: item.assistantItemId,
+    assistantPreview: item.assistantPreview,
+    turnCreatedAt: item.turnCreatedAt,
     createdAt: item.createdAt,
     threadTitle: item.threadTitle,
     codexTitle: item.codexTitle,
@@ -1021,32 +1295,9 @@ const patchLocalFavoriteItem = (item: FavoriteItem, favorite: boolean) => {
     : remainingItems
 }
 
-const patchLocalSettings = (settings: Partial<SidecarSettings>) => {
-  if (snapshot.value) {
-    const previousSettings = snapshot.value.sidecarData.settings || {
-      languageMode: languageMode.value,
-      themeMode: themeMode.value,
-      miniOverDock: miniOverDock.value,
-      showMiniPrompts: showMiniPrompts.value
-    }
-
-    snapshot.value = {
-      ...snapshot.value,
-      sidecarData: {
-        ...snapshot.value.sidecarData,
-        settings: {
-          ...previousSettings,
-          ...settings
-        }
-      }
-    }
-  }
-}
-
 const applyLanguageMode = (nextLanguageMode: LanguageMode) => {
   languageMode.value = nextLanguageMode
   applyI18nLanguageMode(nextLanguageMode)
-  patchLocalSettings({ languageMode: nextLanguageMode })
 }
 
 const getSystemThemeMode = (): Exclude<ThemeMode, 'auto'> => {
@@ -1075,37 +1326,18 @@ const applyDocumentThemeMode = (nextThemeMode: ThemeMode) => {
 const applyThemeMode = (nextThemeMode: ThemeMode) => {
   themeMode.value = nextThemeMode
   applyDocumentThemeMode(nextThemeMode)
-  patchLocalSettings({ themeMode: nextThemeMode })
 }
 
 const applyMiniOverDock = (nextMiniOverDock: boolean) => {
   miniOverDock.value = nextMiniOverDock
-  patchLocalSettings({ miniOverDock: nextMiniOverDock })
+}
+
+const applyShowMiniTool = (nextShowMiniTool: boolean) => {
+  showMiniTool.value = nextShowMiniTool
 }
 
 const applyShowMiniPrompts = (nextShowMiniPrompts: boolean) => {
   showMiniPrompts.value = nextShowMiniPrompts
-  patchLocalSettings({ showMiniPrompts: nextShowMiniPrompts })
-}
-
-const syncSettingsFromSnapshot = (settings: SidecarSettings) => {
-  if (settings.languageMode !== languageMode.value) {
-    languageMode.value = settings.languageMode
-    applyI18nLanguageMode(settings.languageMode)
-  }
-
-  if (settings.themeMode !== themeMode.value) {
-    themeMode.value = settings.themeMode
-    applyDocumentThemeMode(settings.themeMode)
-  }
-
-  if (settings.miniOverDock !== miniOverDock.value) {
-    miniOverDock.value = settings.miniOverDock
-  }
-
-  if (settings.showMiniPrompts !== showMiniPrompts.value) {
-    showMiniPrompts.value = settings.showMiniPrompts
-  }
 }
 
 const applyPopupMenuData = (data: PopupMenuData) => {
@@ -1132,184 +1364,35 @@ const closePopupMenu = async () => {
   }
 }
 
-const applyThemeModeWithTransition = (nextThemeMode: ThemeMode, event?: MouseEvent) => {
-  const viewTransitionDocument = document as Document & {
-    startViewTransition?: (updateCallback: () => void) => { ready: Promise<void> }
-  }
-  const target = event?.currentTarget instanceof HTMLElement
-    ? event.currentTarget
-    : themeControlRef.value
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
-  if (!target || typeof viewTransitionDocument.startViewTransition !== 'function' || reducedMotion) {
-    applyThemeMode(nextThemeMode)
-    return
-  }
-
-  const { top, left, width, height } = target.getBoundingClientRect()
-  const x = left + width / 2
-  const y = top + height / 2
-  const maxRadius = Math.hypot(
-    Math.max(x, window.innerWidth - x),
-    Math.max(y, window.innerHeight - y)
-  )
-
-  viewTransitionDocument.startViewTransition(() => {
-    applyThemeMode(nextThemeMode)
-  }).ready.then(() => {
-    document.documentElement.animate(
-      {
-        clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${maxRadius}px at ${x}px ${y}px)`]
-      },
-      {
-        duration: 800,
-        easing: 'ease-in-out',
-        pseudoElement: '::view-transition-new(root)'
-      }
-    )
-  }).catch(() => undefined)
-}
-
 const applySidecarData = (data: SidecarData) => {
   applyLanguageMode(data.settings.languageMode)
   applyThemeMode(data.settings.themeMode)
   applyMiniOverDock(data.settings.miniOverDock)
+  applyShowMiniTool(data.settings.showMiniTool)
   applyShowMiniPrompts(data.settings.showMiniPrompts)
+  promptTemplates.value = data.promptTemplates
+  continuationResults.value = data.continuationResults || {}
 
   bookmarkItems.value = data.favorites
     .map(item => toPlainFavoriteItem(item))
     .sort((a, b) => b.createdAt - a.createdAt)
-
-  if (snapshot.value) {
-    snapshot.value = {
-      ...snapshot.value,
-      sidecarData: {
-        ...snapshot.value.sidecarData,
-        ...data,
-        favorites: []
-      }
-    }
-  }
 }
 
 const loadSidecarData = async () => {
   applySidecarData(await window.sidecar.getSidecarData())
 }
 
-const saveLanguageMode = async (value: unknown) => {
-  if (!isLanguageMode(value) || value === languageMode.value) {
-    return
-  }
-
-  const previousLanguageMode = languageMode.value
-  const version = ++languageMutationVersion
-
-  languageSaving.value = true
-  applyLanguageMode(value)
-
-  try {
-    const settings = await window.sidecar.setLanguageMode(value)
-
-    if (version === languageMutationVersion) {
-      applyLanguageMode(settings.languageMode)
-    }
-  } catch (error) {
-    if (version === languageMutationVersion) {
-      applyLanguageMode(previousLanguageMode)
-      setFeedback(error instanceof Error ? error.message : String(error))
-    }
-  } finally {
-    if (version === languageMutationVersion) {
-      languageSaving.value = false
-    }
-  }
+const applyExplorations = (nextExplorations: ExplorationRun[]) => {
+  explorations.value = nextExplorations
 }
 
-const saveThemeMode = async (value: unknown, event?: MouseEvent) => {
-  if (!isThemeMode(value) || value === themeMode.value) {
-    return
-  }
-
-  const previousThemeMode = themeMode.value
-  const version = ++themeMutationVersion
-
-  themeSaving.value = true
-  applyThemeModeWithTransition(value, event)
-
-  try {
-    const settings = await window.sidecar.setThemeMode(value)
-
-    if (version === themeMutationVersion) {
-      applyThemeMode(settings.themeMode)
-    }
-  } catch (error) {
-    if (version === themeMutationVersion) {
-      applyThemeMode(previousThemeMode)
-      setFeedback(error instanceof Error ? error.message : String(error))
-    }
-  } finally {
-    if (version === themeMutationVersion) {
-      themeSaving.value = false
-    }
-  }
+const handleExplorationCreated = (run: ExplorationRun) => {
+  explorations.value = [run, ...explorations.value.filter(item => item.id !== run.id)]
+  activePanel.value = 'explorations'
 }
 
-const saveMiniOverDock = async (value: unknown) => {
-  if (typeof value !== 'boolean' || value === miniOverDock.value) {
-    return
-  }
-
-  const previousMiniOverDock = miniOverDock.value
-  const version = ++miniOverDockMutationVersion
-
-  miniOverDockSaving.value = true
-  applyMiniOverDock(value)
-
-  try {
-    const settings = await window.sidecar.setMiniOverDock(value)
-
-    if (version === miniOverDockMutationVersion) {
-      applyMiniOverDock(settings.miniOverDock)
-    }
-  } catch (error) {
-    if (version === miniOverDockMutationVersion) {
-      applyMiniOverDock(previousMiniOverDock)
-      setFeedback(error instanceof Error ? error.message : String(error))
-    }
-  } finally {
-    if (version === miniOverDockMutationVersion) {
-      miniOverDockSaving.value = false
-    }
-  }
-}
-
-const saveShowMiniPrompts = async (value: unknown) => {
-  if (typeof value !== 'boolean' || value === showMiniPrompts.value) {
-    return
-  }
-
-  const previousShowMiniPrompts = showMiniPrompts.value
-  const version = ++showMiniPromptsMutationVersion
-
-  showMiniPromptsSaving.value = true
-  applyShowMiniPrompts(value)
-
-  try {
-    const settings = await window.sidecar.setShowMiniPrompts(value)
-
-    if (version === showMiniPromptsMutationVersion) {
-      applyShowMiniPrompts(settings.showMiniPrompts)
-    }
-  } catch (error) {
-    if (version === showMiniPromptsMutationVersion) {
-      applyShowMiniPrompts(previousShowMiniPrompts)
-      setFeedback(error instanceof Error ? error.message : String(error))
-    }
-  } finally {
-    if (version === showMiniPromptsMutationVersion) {
-      showMiniPromptsSaving.value = false
-    }
-  }
+const loadExplorations = async () => {
+  applyExplorations(await window.sidecar.getExplorations())
 }
 
 const saveFavoriteItem = async (item: FavoriteItem, favorite: boolean) => {
@@ -1342,17 +1425,17 @@ const toggleFavorite = async (thread: ThreadSummary) => {
   await saveFavoriteItem(getFavoriteItem(key) || createThreadFavorite(thread), favorite)
 }
 
-const createMessageBookmark = (thread: ThreadSummary, message: ThreadUserMessagePreview): MessageBookmark => ({
-  type: 'message',
-  id: getMessageBookmarkId(thread.id, message.id),
+const createTurnBookmark = (thread: ThreadSummary, turnPreview: ThreadTurnPreview): TurnBookmark => ({
+  type: 'turn',
+  id: getTurnBookmarkId(thread.id, turnPreview.turnId),
   threadId: thread.id,
-  messageId: message.id,
-  turnId: message.turnId,
-  itemId: message.itemId,
-  index: message.index,
-  preview: message.preview,
-  searchText: message.searchText,
-  messageCreatedAt: message.createdAt,
+  turnId: turnPreview.turnId,
+  userItemId: turnPreview.userItemId,
+  userPreview: turnPreview.userPreview,
+  userSearchText: turnPreview.userSearchText,
+  assistantItemId: turnPreview.assistantItemId,
+  assistantPreview: turnPreview.assistantPreview,
+  turnCreatedAt: turnPreview.createdAt,
   createdAt: Date.now(),
   threadTitle: thread.title,
   codexTitle: thread.codexTitle,
@@ -1360,68 +1443,76 @@ const createMessageBookmark = (thread: ThreadSummary, message: ThreadUserMessage
   projectName: thread.projectName
 })
 
-const isNavigationMessageBookmarked = (message: ThreadUserMessagePreview) => {
-  return Boolean(navigationThreadId.value && isFavoriteActive(getMessageFavoriteKey(navigationThreadId.value, message.id)))
+const isNavigationTurnBookmarked = (turnPreview: ThreadTurnPreview) => {
+  return Boolean(navigationThreadId.value && isFavoriteActive(getTurnFavoriteKey(navigationThreadId.value, turnPreview.turnId)))
 }
 
-const toggleNavigationMessageBookmark = async (message: ThreadUserMessagePreview) => {
+const toggleNavigationTurnBookmark = async (turnPreview: ThreadTurnPreview) => {
   const thread = navigationThread.value
 
   if (!thread) {
-    setFeedback(t('feedback.messageBookmarkThreadMissing'))
+    setFeedback(t('feedback.turnBookmarkThreadMissing'))
     return
   }
 
-  const key = getMessageFavoriteKey(thread.id, message.id)
+  const key = getTurnFavoriteKey(thread.id, turnPreview.turnId)
   const favorite = !isFavoriteActive(key)
 
-  await saveFavoriteItem((getFavoriteItem(key) as MessageBookmark | null) || createMessageBookmark(thread, message), favorite)
+  await saveFavoriteItem((getFavoriteItem(key) as TurnBookmark | null) || createTurnBookmark(thread, turnPreview), favorite)
 }
 
-const removeMessageBookmark = async (bookmark: MessageBookmark) => {
+const removeTurnBookmark = async (bookmark: TurnBookmark) => {
   await saveFavoriteItem(bookmark, false)
 }
 
-const openMessageBookmark = async (bookmark: MessageBookmark) => {
+const openTurnBookmark = async (bookmark: TurnBookmark) => {
   try {
-    if (bookmark.searchText.trim()) {
-      await window.sidecar.openThreadAndSearch(bookmark.threadId, bookmark.searchText)
-      setFeedback(t('feedback.openedSearch'))
-      return
-    }
-
     await window.sidecar.openThread(bookmark.threadId)
-    setFeedback(t('feedback.openedThread'))
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
+  }
+}
+
+const openThreadById = async (threadId: string) => {
+  selectedThreadId.value = threadId
+
+  try {
+    await window.sidecar.openThread(threadId)
   } catch (error) {
     setFeedback(error instanceof Error ? error.message : String(error))
   }
 }
 
 const openThread = async (thread: ThreadSummary) => {
-  selectedThreadId.value = thread.id
-
-  try {
-    await window.sidecar.openThread(thread.id)
-  } catch (error) {
-    setFeedback(error instanceof Error ? error.message : String(error))
-  }
+  await openThreadById(thread.id)
 }
 
 const openContinuationConfirm = (thread: ThreadSummary) => {
-  if (continuationThreadId.value) {
+  if (continuationThreadIds.value.includes(thread.id)) {
     return
   }
 
   selectedThreadId.value = thread.id
   pendingContinuationThread.value = thread
+  const result = getCurrentContinuationResult(thread)
+
+  if (result?.unread) {
+    continuationResults.value = {
+      ...continuationResults.value,
+      [thread.id]: {
+        ...result,
+        unread: false
+      }
+    }
+    void window.sidecar.setContinuationResultUnread(thread.id, false).catch(error => {
+      setFeedback(error instanceof Error ? error.message : String(error))
+    })
+  }
+
   continuationConfirmOpen.value = true
 }
 
 const closeContinuationConfirm = () => {
-  if (continuationThreadId.value) {
-    return
-  }
-
   continuationConfirmOpen.value = false
   pendingContinuationThread.value = null
 }
@@ -1438,35 +1529,42 @@ const handleContinuationConfirmOpenChange = (open: boolean) => {
 const confirmContinueThreadWithSummary = async () => {
   const thread = pendingContinuationThread.value
 
-  if (!thread || continuationThreadId.value) {
+  if (!thread || continuationThreadIds.value.includes(thread.id)) {
     return
   }
 
   selectedThreadId.value = thread.id
-  continuationThreadId.value = thread.id
+  continuationThreadIds.value = [...continuationThreadIds.value, thread.id]
+  continuationConfirmOpen.value = false
+  pendingContinuationThread.value = null
 
   try {
-    await window.sidecar.continueThreadWithSummary(thread.id, thread.cwd)
-    continuationConfirmOpen.value = false
-    pendingContinuationThread.value = null
+    const result = await window.sidecar.continueThreadWithSummary(thread.id, thread.cwd, thread.updatedAt)
+    const continuationResult: ThreadContinuationResult = {
+      threadId: result.threadId,
+      sourceUpdatedAt: result.sourceUpdatedAt,
+      summary: result.summary,
+      prompt: result.prompt,
+      completedAt: result.completedAt,
+      unread: result.unread
+    }
+    continuationResults.value = {
+      ...continuationResults.value,
+      [thread.id]: continuationResult
+    }
     setFeedback(t('feedback.summaryOpened'))
   } catch (error) {
     setFeedback(error instanceof Error ? error.message : String(error))
   } finally {
-    if (continuationThreadId.value === thread.id) {
-      continuationThreadId.value = ''
-    }
+    continuationThreadIds.value = continuationThreadIds.value.filter(threadId => threadId !== thread.id)
   }
 }
 
 const closeNavigation = () => {
   navigationRequestId += 1
-  navigationAccessibilityRequestId += 1
   navigationOpen.value = false
   navigationLoading.value = false
   navigationJumping.value = false
-  navigationAccessibilityGranted.value = null
-  navigationAccessibilityError.value = ''
   navigationError.value = ''
 }
 
@@ -1479,26 +1577,6 @@ const handleNavigationOpenChange = (open: boolean) => {
   closeNavigation()
 }
 
-const checkNavigationAccessibility = async () => {
-  const requestId = ++navigationAccessibilityRequestId
-  navigationAccessibilityGranted.value = null
-  navigationAccessibilityError.value = ''
-
-  try {
-    const result = await window.sidecar.checkAccessibilityPermission()
-
-    if (requestId === navigationAccessibilityRequestId) {
-      navigationAccessibilityGranted.value = result.granted
-      navigationAccessibilityError.value = result.error || ''
-    }
-  } catch (error) {
-    if (requestId === navigationAccessibilityRequestId) {
-      navigationAccessibilityGranted.value = false
-      navigationAccessibilityError.value = error instanceof Error ? error.message : String(error)
-    }
-  }
-}
-
 const scrollNavigationListToBottom = async () => {
   await nextTick()
 
@@ -1509,18 +1587,18 @@ const scrollNavigationListToBottom = async () => {
   }
 }
 
-const loadNavigationMessages = async (thread: ThreadSummary) => {
+const loadNavigationTurnPreviews = async (thread: ThreadSummary) => {
   const requestId = ++navigationRequestId
   navigationLoading.value = true
   navigationError.value = ''
-  navigationMessages.value = []
+  navigationTurnPreviews.value = []
   let shouldScrollToBottom = false
 
   try {
-    const result = await window.sidecar.getThreadUserMessages(thread.id)
+    const result = await window.sidecar.getThreadTurnPreviews(thread.id)
 
     if (requestId === navigationRequestId && navigationThreadId.value === thread.id) {
-      navigationMessages.value = result.messages
+      navigationTurnPreviews.value = result.turnPreviews
       shouldScrollToBottom = true
     }
   } catch (error) {
@@ -1544,11 +1622,10 @@ const openThreadNavigation = async (thread: ThreadSummary) => {
   navigationSearchTerm.value = ''
   navigationOpen.value = true
 
-  void checkNavigationAccessibility()
-  await loadNavigationMessages(thread)
+  await loadNavigationTurnPreviews(thread)
 }
 
-const jumpToUserMessage = async (message: ThreadUserMessagePreview) => {
+const openNavigationThread = async () => {
   const threadId = navigationThreadId.value
 
   if (!threadId || navigationJumping.value) {
@@ -1558,14 +1635,7 @@ const jumpToUserMessage = async (message: ThreadUserMessagePreview) => {
   navigationJumping.value = true
 
   try {
-    if (message.searchText.trim()) {
-      await window.sidecar.openThreadAndSearch(threadId, message.searchText)
-      setFeedback(t('feedback.openedSearch'))
-      return
-    }
-
     await window.sidecar.openThread(threadId)
-    setFeedback(t('feedback.openedThread'))
   } catch (error) {
     setFeedback(error instanceof Error ? error.message : String(error))
   } finally {
@@ -1574,17 +1644,7 @@ const jumpToUserMessage = async (message: ThreadUserMessagePreview) => {
 }
 
 const savePromptTemplates = async (templates: PromptTemplate[]) => {
-  if (snapshot.value) {
-    snapshot.value = {
-      ...snapshot.value,
-      sidecarData: {
-        ...snapshot.value.sidecarData,
-        promptTemplates: templates
-      }
-    }
-  }
-
-  await window.sidecar.savePromptTemplates(templates)
+  promptTemplates.value = await window.sidecar.savePromptTemplates(templates)
 }
 
 const exportData = async () => {
@@ -1619,7 +1679,8 @@ const importData = async () => {
 
     if (!result.canceled) {
       await loadSidecarData()
-      await refreshSnapshot()
+      await loadExplorations()
+      await refreshCodexStore()
       setFeedback(t('feedback.imported'))
     }
   } catch (error) {
@@ -1640,9 +1701,14 @@ applyDocumentThemeMode(themeMode.value)
 onMounted(async () => {
   systemThemeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   systemThemeMediaQuery.addEventListener('change', handleSystemThemeChange)
+  window.addEventListener('focus', handleWindowFocus)
   unsubscribeWindowMode = window.sidecar.onWindowMode(nextMode => {
     mode.value = nextMode
     modeSwitching.value = false
+    syncHookStatusPolling()
+  })
+  unsubscribeSelectPanel = window.sidecar.onSelectPanel(nextPanel => {
+    activePanel.value = nextPanel
   })
 
   try {
@@ -1650,6 +1716,8 @@ onMounted(async () => {
   } catch {
     mode.value = getInitialWindowMode()
   }
+
+  unsubscribeSidecarDataChanged = window.sidecar.onSidecarDataChanged(applySidecarData)
 
   if (mode.value === 'popup-menu') {
     unsubscribePopupMenuData = window.sidecar.onPopupMenuData(applyPopupMenuData)
@@ -1673,19 +1741,46 @@ onMounted(async () => {
     setFeedback(error instanceof Error ? error.message : String(error))
   }
 
-  unsubscribeSnapshot = window.sidecar.onSnapshot(applySnapshot)
-  await refreshSnapshot()
-  refreshTimer = window.setInterval(refreshSnapshot, 5000)
+  if (mode.value === 'exploration-result') {
+    await loadExplorationResult()
+    explorationResultTimer = window.setInterval(loadExplorationResult, 2500)
+    return
+  }
+
+  unsubscribeHookStatusChanged = window.sidecar.onHookStatusChanged(applyHookStatus)
+  await loadHookStatus({ refresh: false })
+
+  try {
+    await loadExplorations()
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
+  }
+
+  unsubscribeCodexStore = window.sidecar.onCodexStore(applyCodexStore)
+  unsubscribeExplorationsChanged = window.sidecar.onExplorationsChanged(applyExplorations)
+  await refreshCodexStore()
+  refreshTimer = window.setInterval(refreshCodexStore, 5000)
 })
 
 onBeforeUnmount(() => {
-  unsubscribeSnapshot?.()
+  unsubscribeCodexStore?.()
+  unsubscribeExplorationsChanged?.()
+  unsubscribeSidecarDataChanged?.()
+  unsubscribeHookStatusChanged?.()
   unsubscribeWindowMode?.()
+  unsubscribeSelectPanel?.()
   unsubscribePopupMenuData?.()
   systemThemeMediaQuery?.removeEventListener('change', handleSystemThemeChange)
+  window.removeEventListener('focus', handleWindowFocus)
 
   if (refreshTimer) {
     window.clearInterval(refreshTimer)
+  }
+
+  stopHookStatusPolling()
+
+  if (explorationResultTimer) {
+    window.clearInterval(explorationResultTimer)
   }
 
   if (feedbackTimer) {

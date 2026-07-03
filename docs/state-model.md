@@ -20,7 +20,8 @@ UI 不直接计算业务状态。UI 只按 `thread.sidecarStatus` 计数和筛�
 | 数据源 | 用途 | 说明 |
 |---|---|---|
 | Codex hooks | 即时状态变化 | `UserPromptSubmit`、`PreToolUse`、`PermissionRequest`、`PostToolUse`、`Stop` 写入 Sidecar hook event 文件 |
-| `runtime-state.json` | Sidecar 运行态缓存 | 保存 hook 推导出的 `running` / `waiting` / `failed`，用于跨 snapshot 保持状态 |
+| `runtime-state.json` | Sidecar 运行态缓存 | 保存 hook 推导出的 `running` / `waiting` / `failed`，用于跨 CodexStore 刷新保持状态 |
+| `sidecar.sqlite` | SidecarStore | 保存 Sidecar 自有数据，例如设置、提示词、收藏、探索记录、窗口状态和 context usage；这些字段不进入 CodexStore |
 | app-server `thread/list` | 当前可见线程列表 | 决定 Sidecar 只展示 Codex 当前列表中的线程 |
 | app-server `thread/read` | 读取 latest turn signal | 用于判断完成未读、失败、异常空完成；不能单独作为运行中任务的结束依据 |
 | Codex transcript JSONL | turn lifecycle 终态确认 | 读取同一 `turn_id` 的 `task_complete` / `turn_aborted` 事件，用于清理 runtime |
@@ -38,7 +39,7 @@ Hook 是即时信号，不是最终真相。
 | `PostToolUse` | 如果 payload 有结构化失败标记则 `failed`，否则 `running` |
 | `Stop` | 如果 payload 有结构化失败标记则 `failed`，否则删除 runtime 记录 |
 
-`Stop` 可能漏掉或无法匹配，所以 snapshot 必须再用 transcript lifecycle 纠偏。
+`Stop` 可能漏掉或无法匹配，所以 CodexStore 刷新必须再用 transcript lifecycle 纠偏。
 
 ## Transcript Lifecycle
 
@@ -54,7 +55,7 @@ Hook 是即时信号，不是最终真相。
 
 ## Latest Turn Signal
 
-Sidecar 会对当前列表中的线程读取 latest turn，并用线程 `updatedAt + path` 做内存缓存。线程没有变化时复用缓存，避免每次 snapshot 重复读取所有 `thread/read`。
+Sidecar 会对当前列表中的线程读取 latest turn，并用线程 `updatedAt + path` 做内存缓存。线程没有变化时复用缓存，避免每次 CodexStore 刷新重复读取所有 `thread/read`。
 
 Latest turn 的失败判断规则：
 
@@ -66,12 +67,12 @@ Latest turn 的失败判断规则：
 
 第三条用于覆盖已验证的断网失败样本。该样本在 `thread/read` 中表现为 `status = completed`、`error = null`、`items` 只有 `userMessage`；对应 transcript 的 `task_complete.last_agent_message = null`。因此不能只用 `status = failed` 判断红灯。
 
-## Snapshot 聚合流程
+## CodexStore 聚合流程
 
-每次生成 snapshot 时，按以下流程计算最终状态：
+每次刷新 CodexStore 时，按以下流程计算最终状态：
 
 1. 处理 hook event 队列，更新 `runtime-state.json`。
-2. 读取 Sidecar 本地数据。
+2. 只从 SidecarStore 读取 CodexStore 渲染所需的派生缓存，例如线程 context usage。
 3. 读取 Codex 原生未读文件。
 4. 通过 `thread/list` 获取当前可见线程。
 5. 用 transcript lifecycle 清理 runtime：
