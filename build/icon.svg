@@ -35,27 +35,31 @@
     </filter>
   </defs>
 
-  <!-- macOS-style rounded app tile -->
-  <rect x="64" y="54" width="896" height="896" rx="210" fill="url(#bg)" filter="url(#outerShadow)"/>
-  <rect x="64" y="54" width="896" height="896" rx="210" fill="url(#bgGlow)" filter="url(#softInset)"/>
-  <rect x="82" y="72" width="860" height="860" rx="194" stroke="#FFFFFF" stroke-opacity="0.72" stroke-width="3"/>
+  <g transform="translate(512 502) scale(0.92) translate(-512 -502)">
+    <!-- macOS-style rounded app tile -->
+    <rect x="64" y="54" width="896" height="896" rx="210" fill="url(#bg)" filter="url(#outerShadow)"/>
+    <rect x="64" y="54" width="896" height="896" rx="210" fill="url(#bgGlow)" filter="url(#softInset)"/>
+    <rect x="82" y="72" width="860" height="860" rx="194" stroke="#FFFFFF" stroke-opacity="0.72" stroke-width="3"/>
 
-  <!-- terminal window outline -->
-  <g filter="url(#strokeShadow)">
-    <path d="M300 176H716C788.9 176 848 235.1 848 308V716C848 788.9 788.9 848 716 848H300C227.1 848 168 788.9 168 716V308C168 235.1 227.1 176 300 176Z"
-          stroke="url(#ink)" stroke-width="34" stroke-linejoin="round"/>
+    <g transform="translate(508 512) scale(0.94) translate(-508 -512)">
+      <!-- terminal window outline -->
+      <g filter="url(#strokeShadow)">
+        <path d="M300 176H716C788.9 176 848 235.1 848 308V716C848 788.9 788.9 848 716 848H300C227.1 848 168 788.9 168 716V308C168 235.1 227.1 176 300 176Z"
+              stroke="url(#ink)" stroke-width="34" stroke-linejoin="round"/>
 
-    <!-- prompt symbol -->
-    <path d="M322 410L474 512L322 614" stroke="url(#ink)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M526 626H646" stroke="url(#ink)" stroke-width="34" stroke-linecap="round"/>
+        <!-- prompt symbol -->
+        <path d="M340 410L442 512L340 614" stroke="url(#ink)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M494 626H614" stroke="url(#ink)" stroke-width="34" stroke-linecap="round"/>
 
-    <!-- right status rail -->
-    <rect x="704" y="284" width="146" height="562" rx="58" fill="#FFFDFC"/>
-    <rect x="704" y="284" width="146" height="562" rx="58" stroke="url(#ink)" stroke-width="28"/>
+        <!-- right status rail -->
+        <rect x="704" y="284" width="146" height="562" rx="58" fill="#FFFDFC"/>
+        <rect x="704" y="284" width="146" height="562" rx="58" stroke="url(#ink)" stroke-width="28"/>
 
-    <circle cx="777" cy="392" r="16" fill="#16A9E8"/>
-    <circle cx="777" cy="488" r="16" fill="#FFC400"/>
-    <circle cx="777" cy="584" r="16" fill="#13D36B"/>
-    <circle cx="777" cy="680" r="16" fill="#FF524A"/>
+        <circle cx="777" cy="392" r="20" fill="#16A9E8"/>
+        <circle cx="777" cy="488" r="20" fill="#FFC400"/>
+        <circle cx="777" cy="584" r="20" fill="#13D36B"/>
+        <circle cx="777" cy="680" r="20" fill="#FF524A"/>
+      </g>
+    </g>
   </g>
 </svg>
