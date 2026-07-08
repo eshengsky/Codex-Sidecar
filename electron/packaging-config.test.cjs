@@ -29,7 +29,7 @@ test('packaging config rebuilds native app dependencies and keeps local release 
   assert.equal(packageJson.scripts['pack:mac:x64'], undefined)
   assert.equal(packageJson.scripts['pack:mac:arm64'], undefined)
   assert.equal(packageJson.scripts['pack:mac:dir'], undefined)
-  assert.equal(packageJson.dependencies['electron-updater'], undefined)
+  assert.match(packageJson.dependencies['electron-updater'], /^\^/)
   assert.match(packageJson.devDependencies['electron-builder'], /^\^/)
 
   assert.match(npmrc, /^node-linker=hoisted$/m)
@@ -44,19 +44,20 @@ test('packaging config rebuilds native app dependencies and keeps local release 
   assert.match(builderConfig, /^nativeRebuilder: sequential$/m)
   assert.match(builderConfig, /^nodeGypRebuild: false$/m)
   assert.match(builderConfig, /^  icon: build\/icon\.icns$/m)
-  assert.doesNotMatch(builderConfig, /^publish:$/m)
-  assert.match(builderConfig, /^  artifactName: \$\{productName\}-\$\{version\}-mac-\$\{arch\}\.\$\{ext\}$/m)
+  assert.match(builderConfig, /^publish:\n  provider: github\n  owner: eshengsky\n  repo: Codex-Sidecar$/m)
+  assert.match(builderConfig, /^  artifactName: \$\{productName\}-mac-\$\{arch\}\.\$\{ext\}$/m)
+  assert.doesNotMatch(builderConfig, /\$\{version\}-mac/)
   assert.doesNotMatch(builderConfig, /^  identity: null$/m)
   assert.match(builderConfig, /^\s+- dmg$/m)
-  assert.doesNotMatch(builderConfig, /^\s+- zip$/m)
+  assert.match(builderConfig, /^\s+- zip$/m)
   assert.doesNotMatch(builderConfig, /^\s+arch:$/m)
   assert.doesNotMatch(builderConfig, /^\s+- x64$/m)
   assert.doesNotMatch(builderConfig, /^\s+- arm64$/m)
 
-  assert.equal(fs.existsSync(path.join(rootDir, 'electron', 'auto-update.cjs')), false)
+  assert.equal(fs.existsSync(path.join(rootDir, 'electron', 'auto-update.cjs')), true)
   assert.equal(fs.existsSync(path.join(rootDir, 'scripts', 'rebuild-native.mjs')), false)
   assert.equal(fs.existsSync(path.join(rootDir, 'scripts', 'release-local.mjs')), true)
-  assert.equal(fs.existsSync(path.join(rootDir, 'scripts', 'merge-mac-update-feed.mjs')), false)
+  assert.equal(fs.existsSync(path.join(rootDir, 'scripts', 'merge-mac-update-feed.mjs')), true)
   assert.match(releaseLocalScript, /const arch = process\.arch/)
   assert.match(releaseLocalScript, /arm64: '--arm64'/)
   assert.match(releaseLocalScript, /x64: '--x64'/)
@@ -65,14 +66,15 @@ test('packaging config rebuilds native app dependencies and keeps local release 
   assert.doesNotMatch(releaseLocalScript, /--x64['"],\s*['"]--arm64/)
 })
 
-test('release workflow builds signed mac dmg artifacts per architecture without update feed assets', () => {
+test('release workflow builds signed mac dmg and update feed artifacts per architecture', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'))
   const releaseWorkflow = readOptional(path.join(rootDir, '.github', 'workflows', 'release.yml'))
   const mainProcessSource = fs.readFileSync(path.join(rootDir, 'electron', 'main.cjs'), 'utf8')
 
   assert.equal(packageJson.scripts.release, undefined)
-  assert.doesNotMatch(mainProcessSource, /auto-update\.cjs/)
-  assert.doesNotMatch(mainProcessSource, /configureAutoUpdates/)
+  assert.match(mainProcessSource, /auto-update\.cjs/)
+  assert.match(mainProcessSource, /initializeAutoUpdate/)
+  assert.match(mainProcessSource, /scheduleAutoUpdateCheck/)
 
   assert.match(releaseWorkflow, /^name: Release$/m)
   assert.match(releaseWorkflow, /^  workflow_dispatch:$/m)
@@ -83,10 +85,10 @@ test('release workflow builds signed mac dmg artifacts per architecture without 
 
   assert.match(releaseWorkflow, /^          - id: mac-arm64$/m)
   assert.match(releaseWorkflow, /^            runner: macos-15$/m)
-  assert.match(releaseWorkflow, /^            electron_builder_args: --mac dmg --arm64$/m)
+  assert.match(releaseWorkflow, /^            electron_builder_args: --mac dmg zip --arm64$/m)
   assert.match(releaseWorkflow, /^          - id: mac-x64$/m)
   assert.match(releaseWorkflow, /^            runner: macos-15-intel$/m)
-  assert.match(releaseWorkflow, /^            electron_builder_args: --mac dmg --x64$/m)
+  assert.match(releaseWorkflow, /^            electron_builder_args: --mac dmg zip --x64$/m)
 
   assert.match(releaseWorkflow, /Validate tag matches package version/)
   assert.match(releaseWorkflow, /pnpm install --frozen-lockfile/)
@@ -101,8 +103,25 @@ test('release workflow builds signed mac dmg artifacts per architecture without 
   assert.match(releaseWorkflow, /codesign --verify --deep --strict --verbose=2/)
   assert.match(releaseWorkflow, /gh release upload "\$GITHUB_REF_NAME" "\$\{artifacts\[@\]\}" --clobber/)
   assert.match(releaseWorkflow, /find release -maxdepth 1 -type f -name '\*\.dmg'/)
-  assert.doesNotMatch(releaseWorkflow, /latest-mac/)
-  assert.doesNotMatch(releaseWorkflow, /\.blockmap/)
-  assert.doesNotMatch(releaseWorkflow, /\.zip/)
-  assert.doesNotMatch(releaseWorkflow, /merge-mac-update-feed/)
+  assert.match(releaseWorkflow, /find release -maxdepth 1 -type f -name '\*\.zip'/)
+  assert.match(releaseWorkflow, /find release -maxdepth 1 -type f -name '\*\.zip\.blockmap'/)
+  assert.match(releaseWorkflow, /latest-mac-\$\{\{ matrix\.id \}\}\.yml/)
+  assert.match(releaseWorkflow, /merge-mac-update-feed\.mjs/)
+  assert.match(releaseWorkflow, /Upload merged latest-mac\.yml/)
+  assert.match(releaseWorkflow, /delete-asset "\$GITHUB_REF_NAME" latest-mac-mac-arm64\.yml/)
+  assert.match(releaseWorkflow, /delete-asset "\$GITHUB_REF_NAME" latest-mac-mac-x64\.yml/)
+})
+
+test('readme download links point to stable latest release assets by architecture', () => {
+  const readme = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8')
+  const readmeZh = fs.readFileSync(path.join(rootDir, 'README.zh-CN.md'), 'utf8')
+  const arm64Url = 'https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-arm64.dmg'
+  const x64Url = 'https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-x64.dmg'
+
+  for (const source of [readme, readmeZh]) {
+    assert.match(source, new RegExp(arm64Url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.match(source, new RegExp(x64Url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.doesNotMatch(source, /Codex Sidecar-<version>-mac-/)
+    assert.doesNotMatch(source, /Codex\.Sidecar-<version>-mac-/)
+  }
 })

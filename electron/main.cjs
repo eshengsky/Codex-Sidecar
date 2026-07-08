@@ -22,6 +22,12 @@ const {
   SIDECAR_HOOK_EVENTS,
   evaluateSidecarHookStatus
 } = require('./sidecar-hooks.cjs')
+const {
+  getUpdateState,
+  initializeAutoUpdate,
+  installUpdate,
+  scheduleAutoUpdateCheck
+} = require('./auto-update.cjs')
 const { version: APP_VERSION } = require('../package.json')
 
 configureAppDataPaths({ app, fs })
@@ -4179,6 +4185,10 @@ ipcMain.handle('sidecar:openGitHub', async () => {
   return true
 })
 
+ipcMain.handle('sidecar:getUpdateState', async () => getUpdateState())
+
+ipcMain.handle('sidecar:installUpdate', async () => installUpdate())
+
 const setFavoriteItem = async (item, favorite) => {
   if (typeof favorite !== 'boolean') {
     throw new Error('favorite must be a boolean.')
@@ -4510,9 +4520,15 @@ app.whenReady().then(async () => {
   await refreshSidecarHookStatus({ applyMini: false, broadcast: false })
   await watchHookEvents()
   watchNativeUnreadState()
+  initializeAutoUpdate({
+    app,
+    getWindows: () => BrowserWindow.getAllWindows(),
+    beforeQuitForUpdate: () => {}
+  })
   createWindow()
   applyShowMiniTool(initialSidecarData.settings.showMiniTool)
   prewarmPopupMenuWindow()
+  scheduleAutoUpdateCheck()
 
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {

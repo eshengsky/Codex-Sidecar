@@ -150,6 +150,9 @@ export const messages = {
       miniOverDock: 'Mini tool covers Dock',
       showMiniPrompts: 'Mini tool instruction entry',
       data: 'Data',
+      version: 'Version',
+      upToDate: 'Up to date',
+      restartUpdate: 'Restart to update',
       languageOptions: {
         auto: 'Auto',
         en: 'English',
@@ -360,6 +363,9 @@ export const messages = {
       miniOverDock: 'mini 工具覆盖 Dock',
       showMiniPrompts: 'mini 工具指令入口',
       data: '数据',
+      version: '版本',
+      upToDate: '已是最新',
+      restartUpdate: '重启更新',
       languageOptions: {
         auto: '自动',
         en: 'English',

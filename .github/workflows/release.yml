@@ -56,11 +56,11 @@ jobs:
           - id: mac-arm64
             runner: macos-15
             arch: arm64
-            electron_builder_args: --mac dmg --arm64
+            electron_builder_args: --mac dmg zip --arm64
           - id: mac-x64
             runner: macos-15-intel
             arch: x64
-            electron_builder_args: --mac dmg --x64
+            electron_builder_args: --mac dmg zip --x64
 
     steps:
       - uses: actions/checkout@v4
@@ -135,6 +135,12 @@ jobs:
           while IFS= read -r -d '' file; do
             artifacts+=("$file")
           done < <(find release -maxdepth 1 -type f -name '*.dmg' -print0)
+          while IFS= read -r -d '' file; do
+            artifacts+=("$file")
+          done < <(find release -maxdepth 1 -type f -name '*.zip' -print0)
+          while IFS= read -r -d '' file; do
+            artifacts+=("$file")
+          done < <(find release -maxdepth 1 -type f -name '*.zip.blockmap' -print0)
 
           if [[ "${#artifacts[@]}" -eq 0 ]]; then
             echo "No release assets found."
@@ -142,3 +148,51 @@ jobs:
           fi
 
           gh release upload "$GITHUB_REF_NAME" "${artifacts[@]}" --clobber
+
+          if [[ ! -f release/latest-mac.yml ]]; then
+            echo "Missing latest-mac.yml."
+            exit 1
+          fi
+
+          cp release/latest-mac.yml "release/latest-mac-${{ matrix.id }}.yml"
+          gh release upload "$GITHUB_REF_NAME" "release/latest-mac-${{ matrix.id }}.yml" --clobber
+
+  merge-mac-update-feed:
+    name: Merge mac update feed
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download arm64 mac update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" --pattern latest-mac-mac-arm64.yml --dir .mac-feed
+
+      - name: Download x64 mac update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" --pattern latest-mac-mac-x64.yml --dir .mac-feed
+
+      - name: Merge latest-mac.yml
+        run: |
+          node scripts/merge-mac-update-feed.mjs \
+            --arm64=.mac-feed/latest-mac-mac-arm64.yml \
+            --x64=.mac-feed/latest-mac-mac-x64.yml \
+            --output=.mac-feed/latest-mac.yml
+
+      - name: Upload merged latest-mac.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" .mac-feed/latest-mac.yml --clobber
+
+      - name: Remove temporary mac update feed fragments
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete-asset "$GITHUB_REF_NAME" latest-mac-mac-arm64.yml --yes || true
+          gh release delete-asset "$GITHUB_REF_NAME" latest-mac-mac-x64.yml --yes || true

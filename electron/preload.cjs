@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('sidecar', {
   getHookStatus: options => ipcRenderer.invoke('sidecar:getHookStatus', options),
   openCodexSettings: () => ipcRenderer.invoke('sidecar:openCodexSettings'),
   openGitHub: () => ipcRenderer.invoke('sidecar:openGitHub'),
+  getUpdateState: () => ipcRenderer.invoke('sidecar:getUpdateState'),
+  installUpdate: () => ipcRenderer.invoke('sidecar:installUpdate'),
   setFavorite: (item, favorite) => ipcRenderer.invoke('sidecar:setFavorite', item, favorite),
   savePromptTemplates: templates => ipcRenderer.invoke('sidecar:savePromptTemplates', templates),
   setLanguageMode: languageMode => ipcRenderer.invoke('sidecar:setLanguageMode', languageMode),
@@ -90,6 +92,15 @@ contextBridge.exposeInMainWorld('sidecar', {
 
     return () => {
       ipcRenderer.removeListener('sidecar:hookStatusChanged', listener)
+    }
+  },
+  onUpdateStateChanged: callback => {
+    const listener = (_event, updateState) => callback(updateState)
+
+    ipcRenderer.on('sidecar:updateStateChanged', listener)
+
+    return () => {
+      ipcRenderer.removeListener('sidecar:updateStateChanged', listener)
     }
   },
   onExplorationsChanged: callback => {

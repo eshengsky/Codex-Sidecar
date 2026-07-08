@@ -25,6 +25,15 @@ interface MiniDragPoint {
   screenY: number
 }
 
+interface SidecarUpdateState {
+  status: 'idle' | 'checking' | 'downloaded' | 'error'
+  currentVersion: string
+  downloadedVersion: string | null
+  error: string | null
+  canInstall: boolean
+  isPackaged: boolean
+}
+
 type WindowMode = 'mini' | 'full' | 'popup-menu' | 'exploration-result'
 type PanelKey = 'threads' | 'bookmarks' | 'explorations' | 'prompts' | 'data'
 
@@ -36,6 +45,8 @@ declare global {
       getHookStatus: (options?: { refresh?: boolean }) => Promise<SidecarHookStatus>
       openCodexSettings: () => Promise<boolean>
       openGitHub: () => Promise<boolean>
+      getUpdateState: () => Promise<SidecarUpdateState>
+      installUpdate: () => Promise<{ ok: boolean, error?: string }>
       setFavorite: (item: FavoriteItem, favorite: boolean) => Promise<{ key: string, favorite: boolean, item: FavoriteItem }>
       savePromptTemplates: (templates: PromptTemplate[]) => Promise<PromptTemplate[]>
       setLanguageMode: (languageMode: LanguageMode) => Promise<SidecarSettings>
@@ -74,6 +85,7 @@ declare global {
       onCodexStore: (callback: (codexStore: CodexStore) => void) => () => void
       onSidecarDataChanged: (callback: (sidecarData: SidecarData) => void) => () => void
       onHookStatusChanged: (callback: (hookStatus: SidecarHookStatus) => void) => () => void
+      onUpdateStateChanged: (callback: (state: SidecarUpdateState) => void) => () => void
       onExplorationsChanged: (callback: (explorations: ExplorationRun[]) => void) => () => void
     }
   }

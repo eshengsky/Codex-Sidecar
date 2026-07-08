@@ -24,6 +24,7 @@
     "@iconify/vue": "^5.0.1",
     "@nuxt/ui": "^4.8.2",
     "better-sqlite3": "^12.11.1",
+    "electron-updater": "^6.8.9",
     "tailwindcss": "^4.3.1",
     "vue": "^3.5.38",
     "vue-i18n": "^11.4.6",

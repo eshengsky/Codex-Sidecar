@@ -93,7 +93,7 @@
         <h3 class="m-0 text-[13px]">{{ t('settings.data') }}</h3>
       </div>
       <div class="flex flex-none gap-1.5">
-        <UButton color="neutral" variant="soft" size="sm" class="justify-center" :loading="exporting" :disabled="importing" @click="emit('exportData')">
+        <UButton color="neutral" variant="outline" size="sm" class="justify-center" :loading="exporting" :disabled="importing" @click="emit('exportData')">
           {{ t('common.export') }}
         </UButton>
         <UButton color="neutral" variant="outline" size="sm" class="justify-center" :loading="importing" :disabled="exporting" @click="emit('importData')">
@@ -102,10 +102,28 @@
       </div>
     </article>
 
+    <article class="flex min-w-0 items-center justify-between gap-3 rounded-[9px] border border-default bg-default p-2.5 text-gray-900 dark:text-gray-100">
+      <div class="min-w-0 flex-1 basis-0">
+        <h3 class="m-0 text-[13px]">{{ t('settings.version') }} · v{{ appVersion }}</h3>
+      </div>
+      <UButton
+        v-if="updateReady"
+        color="neutral"
+        variant="outline"
+        size="sm"
+        class="flex-none justify-center"
+        :loading="updateInstalling"
+        @click="installUpdate"
+      >
+        {{ t('settings.restartUpdate') }}
+      </UButton>
+      <span v-else class="flex-none text-xs leading-none text-gray-500 dark:text-gray-400">
+        {{ t('settings.upToDate') }}
+      </span>
+    </article>
+
     <footer class="mt-auto flex flex-none items-center justify-center gap-1.5 pt-2 text-xs leading-none text-gray-500 dark:text-gray-400">
       <span>Codex Sidecar</span>
-      <span aria-hidden="true">&middot;</span>
-      <span>v{{ appVersion }}</span>
       <span aria-hidden="true">&middot;</span>
       <button
         type="button"
@@ -119,7 +137,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import packageJson from '../../../package.json'
 import type { LanguageMode, ThemeMode } from '@/types/sidecar'
@@ -153,12 +171,17 @@ const themeSaving = ref(false)
 const showMiniToolSaving = ref(false)
 const miniOverDockSaving = ref(false)
 const showMiniPromptsSaving = ref(false)
+const updateInstalling = ref(false)
 const appVersion = packageJson.version
+const updateState = ref<SidecarUpdateState | null>(null)
 let languageMutationVersion = 0
 let themeMutationVersion = 0
 let showMiniToolMutationVersion = 0
 let miniOverDockMutationVersion = 0
 let showMiniPromptsMutationVersion = 0
+let unsubscribeUpdateState: (() => void) | null = null
+
+const updateReady = computed(() => updateState.value?.canInstall === true)
 
 const isLanguageMode = (value: unknown): value is LanguageMode => value === 'auto' || value === 'en' || value === 'zh'
 const isThemeMode = (value: unknown): value is ThemeMode => value === 'auto' || value === 'light' || value === 'dark'
@@ -170,6 +193,46 @@ const openGitHub = async () => {
     emit('feedback', error instanceof Error ? error.message : String(error))
   }
 }
+
+const refreshUpdateState = async () => {
+  try {
+    updateState.value = await window.sidecar.getUpdateState()
+  } catch (error) {
+    emit('feedback', error instanceof Error ? error.message : String(error))
+  }
+}
+
+const installUpdate = async () => {
+  if (!updateReady.value || updateInstalling.value) {
+    return
+  }
+
+  updateInstalling.value = true
+
+  try {
+    const result = await window.sidecar.installUpdate()
+
+    if (!result.ok) {
+      emit('feedback', result.error || 'Failed to install update.')
+      updateInstalling.value = false
+    }
+  } catch (error) {
+    updateInstalling.value = false
+    emit('feedback', error instanceof Error ? error.message : String(error))
+  }
+}
+
+onMounted(() => {
+  void refreshUpdateState()
+  unsubscribeUpdateState = window.sidecar.onUpdateStateChanged(state => {
+    updateState.value = state
+  })
+})
+
+onBeforeUnmount(() => {
+  unsubscribeUpdateState?.()
+  unsubscribeUpdateState = null
+})
 
 const applyThemeModeWithTransition = (nextThemeMode: ThemeMode, event?: MouseEvent) => {
   const viewTransitionDocument = document as Document & {
