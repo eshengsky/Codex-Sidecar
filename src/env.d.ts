@@ -63,6 +63,7 @@ declare global {
       createExplorationRun: (request: ExplorationCreateRequest) => Promise<ExplorationRun>
       getExplorations: () => Promise<ExplorationRun[]>
       getExplorationRun: (runId: string) => Promise<ExplorationRun | null>
+      deleteExplorationRun: (runId: string) => Promise<ExplorationRun | null>
       openExplorationResult: (runId: string) => Promise<boolean>
       getThreadTurnPreviews: (threadId: string) => Promise<{ threadId: string, turnPreviews: ThreadTurnPreview[] }>
       showPopupMenu: (options: PopupMenuShowOptions) => Promise<PopupMenuResult>

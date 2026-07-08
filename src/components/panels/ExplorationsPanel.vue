@@ -10,15 +10,15 @@
         class="min-w-0 flex-1"
       />
       <UTooltip :text="t('explorations.new')">
-        <UButton icon="i-lucide-plus" color="neutral" variant="soft" size="sm" square @click="openExplorationCreate" />
+        <UButton icon="i-lucide-plus" color="neutral" variant="outline" size="sm" square @click="openExplorationCreate" />
       </UTooltip>
     </div>
 
     <div class="flex min-h-0 flex-col gap-2 overflow-y-auto overflow-x-hidden pr-2.5 -mr-2.5 pb-2">
       <UEmpty
         v-if="visibleExplorations.length === 0"
-        :title="t('explorations.emptyTitle')"
-        :description="t('explorations.emptyDescription')"
+        :title="explorationEmptyTitle"
+        :description="explorationEmptyDescription"
         variant="naked"
         size="xs"
         class="min-h-[260px] self-center"
@@ -50,21 +50,36 @@
 
           <div class="flex min-w-0 items-center justify-between gap-2">
             <div class="flex min-w-0 items-center gap-1">
-              <span class="flex-none text-[11px] leading-none text-gray-500 dark:text-gray-400">{{ t('explorations.countLabel', { count: run.concurrency }) }}</span>
+              <span class="flex-none rounded-md bg-neutral-100 px-2 py-1 text-[11px] leading-none text-gray-600 dark:bg-neutral-800 dark:text-gray-300">{{ t('explorations.countLabel', { count: run.concurrency }) }}</span>
               <span class="rounded-md px-2 py-1 text-[11px] leading-none" :class="explorationStatusClass(run.status)">
                 {{ getExplorationStatusLabel(run.status) }}
               </span>
             </div>
-            <UButton
-              color="neutral"
-              variant="outline"
-              size="xs"
-              icon="i-lucide-external-link"
-              :disabled="isExplorationRunning(run)"
-              @click="openExplorationResult(run)"
-            >
-              {{ t('explorations.openResult') }}
-            </UButton>
+            <div class="flex flex-none items-center gap-1">
+              <UButton
+                color="neutral"
+                variant="outline"
+                size="xs"
+                icon="i-lucide-external-link"
+                :disabled="isExplorationResultDisabled(run)"
+                @click="openExplorationResult(run)"
+              >
+                {{ t('explorations.openResult') }}
+              </UButton>
+              <UTooltip :text="t('explorations.deleteRecord')">
+                <UButton
+                  icon="i-lucide-trash-2"
+                  color="neutral"
+                  variant="ghost"
+                  size="xs"
+                  square
+                  :aria-label="t('explorations.deleteRecord')"
+                  :loading="explorationDeletingId === run.id"
+                  :disabled="isExplorationDeleteDisabled(run)"
+                  @click="openExplorationDeleteConfirm(run)"
+                />
+              </UTooltip>
+            </div>
           </div>
         </article>
       </template>
@@ -200,6 +215,41 @@
         </div>
       </template>
     </UModal>
+
+    <UModal
+      v-model:open="explorationDeleteConfirmOpen"
+      :title="t('explorations.deleteConfirmTitle')"
+      @after:leave="clearExplorationDeleteConfirm"
+    >
+      <template #body>
+        <p class="m-0 text-[13px] leading-[1.55] text-gray-700 dark:text-gray-200">
+          {{ t('explorations.deleteConfirmDescription') }}
+        </p>
+      </template>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-1.5">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            size="sm"
+            :disabled="explorationDeletingId !== null"
+            @click="closeExplorationDeleteConfirm"
+          >
+            {{ t('common.cancel') }}
+          </UButton>
+          <UButton
+            color="neutral"
+            size="sm"
+            :loading="explorationDeletingId !== null"
+            :disabled="!pendingDeleteExploration"
+            @click="confirmDeleteExploration"
+          >
+            {{ t('common.delete') }}
+          </UButton>
+        </div>
+      </template>
+    </UModal>
   </section>
 </template>
 
@@ -222,6 +272,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   created: [run: ExplorationRun]
+  deleted: [runId: string]
   feedback: [message: string]
   'open-source-thread': [threadId: string]
 }>()
@@ -234,10 +285,15 @@ const explorationConcurrency = ref<2 | 3 | 4 | 5>(3)
 const explorationSourceThreadId = ref<string | null>(null)
 const explorationImages = ref<Array<{ path: string, name: string }>>([])
 const explorationCreating = ref(false)
+const explorationDeleteConfirmOpen = ref(false)
+const pendingDeleteExploration = ref<ExplorationRun | null>(null)
+const explorationDeletingId = ref<string | null>(null)
 const explorationConcurrencyOptions = [2, 3, 4, 5] as const
 const explorationSourceOptions = ref<ExplorationSourceOption[]>([])
 
 const normalizedSearchTerm = computed(() => searchTerm.value.trim().toLowerCase())
+
+const hasExplorationSearch = computed(() => searchTerm.value.trim().length > 0)
 
 const visibleExplorations = computed(() => {
   const term = normalizedSearchTerm.value
@@ -256,6 +312,9 @@ const visibleExplorations = computed(() => {
     ].some(value => String(value || '').toLowerCase().includes(term))
   })
 })
+
+const explorationEmptyTitle = computed(() => hasExplorationSearch.value ? t('explorations.emptySearchTitle') : t('explorations.emptyTitle'))
+const explorationEmptyDescription = computed(() => hasExplorationSearch.value ? t('explorations.emptySearchDescription') : t('explorations.emptyDescription'))
 
 const getExplorationSourceOptions = () => props.threads.map(thread => ({
   id: thread.id,
@@ -277,6 +336,10 @@ const getExplorationStatusLabel = (status: ExplorationRunStatus | 'pending') => 
 }
 
 const isExplorationRunning = (run: ExplorationRun) => run.status === 'running' || run.status === 'summarizing'
+
+const isExplorationResultDisabled = (run: ExplorationRun) => isExplorationRunning(run) || explorationDeletingId.value === run.id
+
+const isExplorationDeleteDisabled = (run: ExplorationRun) => isExplorationRunning(run) || Boolean(explorationDeletingId.value)
 
 const getExplorationPreviewText = (run: ExplorationRun) => {
   return run.prompt.trim() || t('explorations.images', { count: run.images.length })
@@ -344,6 +407,50 @@ const removeExplorationImage = (imagePath: string) => {
   explorationImages.value = explorationImages.value.filter(image => image.path !== imagePath)
 }
 
+const openExplorationDeleteConfirm = (run: ExplorationRun) => {
+  if (isExplorationDeleteDisabled(run)) {
+    return
+  }
+
+  pendingDeleteExploration.value = run
+  explorationDeleteConfirmOpen.value = true
+}
+
+const closeExplorationDeleteConfirm = () => {
+  if (explorationDeletingId.value) {
+    return
+  }
+
+  explorationDeleteConfirmOpen.value = false
+}
+
+const clearExplorationDeleteConfirm = () => {
+  if (!explorationDeletingId.value) {
+    pendingDeleteExploration.value = null
+  }
+}
+
+const confirmDeleteExploration = async () => {
+  const run = pendingDeleteExploration.value
+
+  if (!run || isExplorationRunning(run) || explorationDeletingId.value) {
+    return
+  }
+
+  explorationDeletingId.value = run.id
+
+  try {
+    await window.sidecar.deleteExplorationRun(run.id)
+    emit('deleted', run.id)
+    explorationDeleteConfirmOpen.value = false
+    pendingDeleteExploration.value = null
+  } catch (error) {
+    emit('feedback', error instanceof Error ? error.message : String(error))
+  } finally {
+    explorationDeletingId.value = null
+  }
+}
+
 const submitExploration = async () => {
   if (explorationSubmitDisabled.value) {
     return
@@ -373,6 +480,10 @@ const submitExploration = async () => {
 }
 
 const openExplorationResult = async (run: ExplorationRun) => {
+  if (explorationDeletingId.value === run.id) {
+    return
+  }
+
   if (isExplorationRunning(run)) {
     emit('feedback', t('feedback.explorationOpenAfterDone'))
     return

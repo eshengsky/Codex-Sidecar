@@ -284,6 +284,7 @@
         :threads="threads"
         :app-locale="appLocale"
         @created="handleExplorationCreated"
+        @deleted="handleExplorationDeleted"
         @feedback="setFeedback"
         @open-source-thread="openThreadById"
       />
@@ -1389,6 +1390,10 @@ const applyExplorations = (nextExplorations: ExplorationRun[]) => {
 const handleExplorationCreated = (run: ExplorationRun) => {
   explorations.value = [run, ...explorations.value.filter(item => item.id !== run.id)]
   activePanel.value = 'explorations'
+}
+
+const handleExplorationDeleted = (runId: string) => {
+  explorations.value = explorations.value.filter(item => item.id !== runId)
 }
 
 const loadExplorations = async () => {

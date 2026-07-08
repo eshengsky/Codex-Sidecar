@@ -169,6 +169,46 @@ test('persists latest thread continuation results and includes them in Sidecar d
   reopened.close()
 })
 
+test('deletes exploration runs by id without affecting other runs', () => {
+  const { store } = createTempStore()
+  const createRun = (id, createdAt) => ({
+    id,
+    title: `Run ${id}`,
+    prompt: `Explore ${id}`,
+    images: [],
+    concurrency: 2,
+    sourceThreadId: null,
+    sourceThreadTitle: null,
+    sourceThreadCwd: null,
+    status: 'completed',
+    createdAt,
+    updatedAt: createdAt,
+    completedAt: createdAt,
+    candidates: [],
+    summary: {
+      threadId: null,
+      turnId: null,
+      status: 'completed',
+      output: `Summary ${id}`,
+      error: null,
+      startedAt: createdAt,
+      completedAt: createdAt
+    }
+  })
+  const oldRun = createRun('run-old', 100)
+  const newRun = createRun('run-new', 200)
+
+  store.saveExplorationRun(oldRun)
+  store.saveExplorationRun(newRun)
+
+  assert.deepEqual(store.deleteExplorationRun('run-old'), oldRun)
+  assert.equal(store.getExplorationRun('run-old'), null)
+  assert.deepEqual(store.listExplorationRuns(), [newRun])
+  assert.equal(store.deleteExplorationRun('missing-run'), null)
+
+  store.close()
+})
+
 test('persists turn bookmarks and reads legacy message bookmarks as turn bookmarks', () => {
   const { dbPath, store } = createTempStore()
   const turnBookmark = {

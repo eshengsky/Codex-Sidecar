@@ -861,6 +861,17 @@ const createSidecarStore = dbPath => {
     return normalizedRun
   }
 
+  const deleteExplorationRun = runId => {
+    const run = getExplorationRun(runId)
+
+    if (!run) {
+      return null
+    }
+
+    db.prepare('DELETE FROM exploration_runs WHERE id = ?').run(run.id)
+    return run
+  }
+
   const replaceExplorationRuns = runs => {
     const normalizedRuns = Array.isArray(runs)
       ? runs.map(normalizeExplorationRun).filter(Boolean).sort((a, b) => b.createdAt - a.createdAt).slice(0, EXPLORATION_RUN_LIMIT)
@@ -910,6 +921,7 @@ const createSidecarStore = dbPath => {
     listExplorationRuns,
     getExplorationRun,
     saveExplorationRun,
+    deleteExplorationRun,
     replaceExplorationRuns
   }
 }

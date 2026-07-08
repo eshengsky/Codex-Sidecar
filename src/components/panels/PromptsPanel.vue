@@ -10,15 +10,15 @@
         class="min-w-0 flex-1"
       />
       <UTooltip :text="t('prompts.add')">
-        <UButton icon="i-lucide-plus" color="neutral" variant="soft" size="sm" square @click="openNewTemplate" />
+        <UButton icon="i-lucide-plus" color="neutral" variant="outline" size="sm" square @click="openNewTemplate" />
       </UTooltip>
     </div>
 
     <div class="flex min-h-0 flex-col gap-1.5 overflow-y-auto overflow-x-hidden pr-2.5 -mr-2.5 pb-2">
       <UEmpty
         v-if="visibleTemplates.length === 0"
-        :title="t('prompts.emptyTitle')"
-        :description="t('prompts.emptyDescription')"
+        :title="promptEmptyTitle"
+        :description="promptEmptyDescription"
         variant="naked"
         size="xs"
         class="min-h-[220px] self-center"
@@ -160,6 +160,8 @@ watch(
 
 const normalizedSearchTerm = computed(() => searchTerm.value.trim().toLowerCase())
 
+const hasPromptSearch = computed(() => searchTerm.value.trim().length > 0)
+
 const visibleTemplates = computed(() => {
   const term = normalizedSearchTerm.value
 
@@ -174,6 +176,9 @@ const visibleTemplates = computed(() => {
     ].some(value => String(value || '').toLowerCase().includes(term))
   })
 })
+
+const promptEmptyTitle = computed(() => hasPromptSearch.value ? t('prompts.emptySearchTitle') : t('prompts.emptyTitle'))
+const promptEmptyDescription = computed(() => hasPromptSearch.value ? t('prompts.emptySearchDescription') : t('prompts.emptyDescription'))
 
 function createBlankTemplate(): PromptTemplate {
   return {

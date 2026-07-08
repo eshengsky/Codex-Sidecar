@@ -21,24 +21,45 @@ const loadTsModule = filePath => {
   return mod.exports
 }
 
-test('context usage tooltip key follows warning thresholds', () => {
-  const { getContextUsageTooltipKey } = loadTsModule(path.join(__dirname, 'context-usage-tooltip.ts'))
+test('context usage tooltip params include rounded percent and compact token counts', () => {
+  const { getContextUsageTooltipParams } = loadTsModule(path.join(__dirname, 'context-usage-tooltip.ts'))
 
-  assert.equal(getContextUsageTooltipKey(null), 'threads.contextUsageTooltip')
-  assert.equal(getContextUsageTooltipKey(69), 'threads.contextUsageTooltip')
-  assert.equal(getContextUsageTooltipKey(70), 'threads.contextUsageContinuationTooltip')
-  assert.equal(getContextUsageTooltipKey(89), 'threads.contextUsageContinuationTooltip')
-  assert.equal(getContextUsageTooltipKey(90), 'threads.contextUsageContinuationUrgentTooltip')
+  assert.deepEqual(getContextUsageTooltipParams(null, 'zh'), null)
+  assert.deepEqual(
+    getContextUsageTooltipParams({
+      percent: 20.4,
+      totalTokens: 12472,
+      modelContextWindow: 258400,
+      updatedAt: 1700000000000
+    }, 'zh'),
+    {
+      percent: 20,
+      totalTokens: '12.5k',
+      modelContextWindow: '258.4k'
+    }
+  )
+  assert.deepEqual(
+    getContextUsageTooltipParams({
+      percent: 8.6,
+      totalTokens: 9842,
+      modelContextWindow: 10000
+    }, 'en'),
+    {
+      percent: 9,
+      totalTokens: '9,842',
+      modelContextWindow: '10k'
+    }
+  )
 })
 
-test('context usage tooltip messages include continuation guidance', () => {
+test('context usage tooltip messages stay compact and include token counts', () => {
   const { messages } = loadTsModule(path.join(__dirname, '../i18n/messages.ts'))
 
-  assert.equal(messages.zh.threads.contextUsageTooltip, '已用上下文 {percent}%')
-  assert.equal(messages.zh.threads.contextUsageContinuationTooltip, '已用上下文 {percent}%，可考虑使用对话接续')
-  assert.equal(messages.zh.threads.contextUsageContinuationUrgentTooltip, '已用上下文 {percent}%，建议使用对话接续')
+  assert.equal(messages.zh.threads.contextUsageTooltip, '已用 {percent}% · {totalTokens} / {modelContextWindow} tokens')
+  assert.equal(messages.zh.threads.contextUsageContinuationTooltip, undefined)
+  assert.equal(messages.zh.threads.contextUsageContinuationUrgentTooltip, undefined)
 
-  assert.equal(messages.en.threads.contextUsageTooltip, 'Context used {percent}%')
-  assert.equal(messages.en.threads.contextUsageContinuationTooltip, 'Context used {percent}%, consider using conversation continuation')
-  assert.equal(messages.en.threads.contextUsageContinuationUrgentTooltip, 'Context used {percent}%, use conversation continuation')
+  assert.equal(messages.en.threads.contextUsageTooltip, 'Used {percent}% · {totalTokens} / {modelContextWindow} tokens')
+  assert.equal(messages.en.threads.contextUsageContinuationTooltip, undefined)
+  assert.equal(messages.en.threads.contextUsageContinuationUrgentTooltip, undefined)
 })

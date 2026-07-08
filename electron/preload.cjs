@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('sidecar', {
   createExplorationRun: request => ipcRenderer.invoke('sidecar:createExplorationRun', request),
   getExplorations: () => ipcRenderer.invoke('sidecar:getExplorations'),
   getExplorationRun: runId => ipcRenderer.invoke('sidecar:getExplorationRun', runId),
+  deleteExplorationRun: runId => ipcRenderer.invoke('sidecar:deleteExplorationRun', runId),
   openExplorationResult: runId => ipcRenderer.invoke('sidecar:openExplorationResult', runId),
   getThreadTurnPreviews: threadId => ipcRenderer.invoke('sidecar:getThreadTurnPreviews', threadId),
   showPopupMenu: options => ipcRenderer.invoke('sidecar:showPopupMenu', options),

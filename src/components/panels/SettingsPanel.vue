@@ -1,5 +1,5 @@
 <template>
-  <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5 overflow-auto pb-2">
+  <section class="flex min-h-0 min-w-0 flex-1 flex-col gap-2.5 overflow-y-auto overflow-x-hidden pr-2.5 -mr-2.5 pb-2">
     <article class="flex min-w-0 items-center justify-between gap-3 rounded-[9px] border border-default bg-default p-2.5 text-gray-900 dark:text-gray-100">
       <div class="min-w-0 flex-1 basis-0">
         <h3 class="m-0 text-[13px]">{{ t('settings.language') }}</h3>

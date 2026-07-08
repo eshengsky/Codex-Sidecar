@@ -113,7 +113,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AppLocale, ThreadSummary } from '@/types/sidecar'
-import { getContextUsageTooltipKey } from '@/utils/context-usage-tooltip'
+import { getContextUsageTooltipParams } from '@/utils/context-usage-tooltip'
 import { formatRelativeTime } from '@/utils/format'
 
 const props = defineProps<{
@@ -134,24 +134,18 @@ defineEmits<{
 const { t, locale } = useI18n()
 const appLocale = computed<AppLocale>(() => locale.value === 'zh' ? 'zh' : 'en')
 
-const contextUsagePercent = computed(() => {
-  const percent = Number(props.thread.contextUsage?.percent)
+const contextUsageTooltipParams = computed(() => getContextUsageTooltipParams(props.thread.contextUsage, appLocale.value))
 
-  if (!Number.isFinite(percent)) {
-    return null
-  }
-
-  return Math.max(0, Math.min(100, Math.round(percent)))
-})
+const contextUsagePercent = computed(() => contextUsageTooltipParams.value?.percent ?? null)
 
 const contextUsageLabel = computed(() => {
   return contextUsagePercent.value === null ? '' : `${contextUsagePercent.value}`
 })
 
 const contextUsageTooltip = computed(() => {
-  return contextUsagePercent.value === null
+  return contextUsageTooltipParams.value === null
     ? ''
-    : t(getContextUsageTooltipKey(contextUsagePercent.value), { percent: contextUsagePercent.value })
+    : t('threads.contextUsageTooltip', contextUsageTooltipParams.value)
 })
 
 const contextUsageDashOffset = computed(() => {

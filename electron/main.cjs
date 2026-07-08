@@ -4390,6 +4390,35 @@ ipcMain.handle('sidecar:getExplorationRun', async (_event, runId) => {
   return getExplorationRun(normalizedId)
 })
 
+ipcMain.handle('sidecar:deleteExplorationRun', async (_event, runId) => {
+  const normalizedId = normalizeExplorationString(runId, 120).trim()
+
+  if (!normalizedId) {
+    return null
+  }
+
+  const deletedRun = getSidecarStore().deleteExplorationRun(normalizedId)
+
+  if (!deletedRun) {
+    return null
+  }
+
+  const resultWindow = explorationResultWindows.get(deletedRun.id)
+
+  if (resultWindow && !resultWindow.isDestroyed()) {
+    resultWindow.close()
+  }
+
+  try {
+    await fsp.rm(getExplorationAttachmentsDir(deletedRun.id), { recursive: true, force: true })
+  } catch {
+    // Attachment cleanup is best-effort; the Sidecar record is already deleted.
+  }
+
+  sendExplorationsChanged()
+  return deletedRun
+})
+
 ipcMain.handle('sidecar:openExplorationResult', async (_event, runId) => {
   const run = await getExplorationRun(normalizeExplorationString(runId, 120).trim())
 
