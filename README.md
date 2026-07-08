@@ -21,8 +21,8 @@
   </p>
 
   <p>
-    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest">Download</a> ·
-    <a href="https://github.com/eshengsky/Codex-Sidecar/issues">Feedback</a>
+    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-arm64.dmg">Download for Apple Silicon</a> ·
+    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-x64.dmg">Download for Intel</a>
   </p>
 </div>
 
