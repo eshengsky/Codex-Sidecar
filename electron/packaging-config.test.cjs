@@ -45,7 +45,8 @@ test('packaging config rebuilds native app dependencies and keeps local release 
   assert.match(builderConfig, /^nodeGypRebuild: false$/m)
   assert.match(builderConfig, /^  icon: build\/icon\.icns$/m)
   assert.match(builderConfig, /^publish:\n  provider: github\n  owner: eshengsky\n  repo: Codex-Sidecar$/m)
-  assert.match(builderConfig, /^  artifactName: \$\{productName\}-mac-\$\{arch\}\.\$\{ext\}$/m)
+  assert.match(builderConfig, /^  artifactName: Codex-Sidecar-mac-\$\{arch\}\.\$\{ext\}$/m)
+  assert.doesNotMatch(builderConfig, /\$\{productName\}-mac/)
   assert.doesNotMatch(builderConfig, /\$\{version\}-mac/)
   assert.doesNotMatch(builderConfig, /^  identity: null$/m)
   assert.match(builderConfig, /^\s+- dmg$/m)
@@ -115,13 +116,14 @@ test('release workflow builds signed mac dmg and update feed artifacts per archi
 test('readme download links point to stable latest release assets by architecture', () => {
   const readme = fs.readFileSync(path.join(rootDir, 'README.md'), 'utf8')
   const readmeZh = fs.readFileSync(path.join(rootDir, 'README.zh-CN.md'), 'utf8')
-  const arm64Url = 'https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-arm64.dmg'
-  const x64Url = 'https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-x64.dmg'
+  const arm64Url = 'https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-arm64.dmg'
+  const x64Url = 'https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-x64.dmg'
 
   for (const source of [readme, readmeZh]) {
     assert.match(source, new RegExp(arm64Url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
     assert.match(source, new RegExp(x64Url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
     assert.doesNotMatch(source, /Codex Sidecar-<version>-mac-/)
     assert.doesNotMatch(source, /Codex\.Sidecar-<version>-mac-/)
+    assert.doesNotMatch(source, /Codex\.Sidecar-mac-(arm64|x64)\.dmg/)
   }
 })

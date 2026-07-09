@@ -21,8 +21,8 @@
   </p>
 
   <p>
-    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-arm64.dmg">Mac Apple Silicon 下载</a> ·
-    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-x64.dmg">Mac Intel 下载</a>
+    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-arm64.dmg">Mac Apple Silicon 下载</a> ·
+    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-x64.dmg">Mac Intel 下载</a>
   </p>
 </div>
 
@@ -107,8 +107,8 @@ Sidecar 自有数据保存在本机，包括收藏、指令、优选记录、窗
 
 | 平台 | 架构 | 安装包 |
 | --- | --- | --- |
-| macOS | Apple Silicon | [Codex.Sidecar-mac-arm64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-arm64.dmg) |
-| macOS | Intel | [Codex.Sidecar-mac-x64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-x64.dmg) |
+| macOS | Apple Silicon | [Codex-Sidecar-mac-arm64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-arm64.dmg) |
+| macOS | Intel | [Codex-Sidecar-mac-x64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-x64.dmg) |
 
 ## 首次使用
 

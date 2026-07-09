@@ -27,7 +27,7 @@ nodeGypRebuild: false
 mac:
   icon: build/icon.icns
   category: public.app-category.developer-tools
-  artifactName: ${productName}-mac-${arch}.${ext}
+  artifactName: Codex-Sidecar-mac-${arch}.${ext}
   target:
     - dmg
     - zip

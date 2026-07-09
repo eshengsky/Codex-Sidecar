@@ -1,6 +1,6 @@
 {
   "name": "codex-sidecar",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "private": true,
   "description": "A macOS companion panel for monitoring Codex Desktop threads, usage, prompts, and local metadata.",
   "main": "electron/main.cjs",

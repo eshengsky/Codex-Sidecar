@@ -17,13 +17,13 @@ test('merges arm64 and x64 latest-mac feeds into one architecture-aware feed', (
   fs.writeFileSync(arm64Path, [
     'version: 0.2.0',
     'files:',
-    '  - url: Codex.Sidecar-mac-arm64.zip',
+    '  - url: Codex-Sidecar-mac-arm64.zip',
     '    sha512: arm64hash',
     '    size: 123',
-    '  - url: Codex.Sidecar-mac-arm64.zip.blockmap',
+    '  - url: Codex-Sidecar-mac-arm64.zip.blockmap',
     '    sha512: arm64blockmaphash',
     '    size: 12',
-    'path: Codex.Sidecar-mac-arm64.zip',
+    'path: Codex-Sidecar-mac-arm64.zip',
     'sha512: arm64hash',
     'releaseDate: 2026-07-08T00:00:00.000Z',
     ''
@@ -32,10 +32,10 @@ test('merges arm64 and x64 latest-mac feeds into one architecture-aware feed', (
   fs.writeFileSync(x64Path, [
     'version: 0.2.0',
     'files:',
-    '  - url: Codex.Sidecar-mac-x64.zip',
+    '  - url: Codex-Sidecar-mac-x64.zip',
     '    sha512: x64hash',
     '    size: 456',
-    'path: Codex.Sidecar-mac-x64.zip',
+    'path: Codex-Sidecar-mac-x64.zip',
     'sha512: x64hash',
     'releaseDate: 2026-07-08T00:00:00.000Z',
     ''
@@ -54,10 +54,11 @@ test('merges arm64 and x64 latest-mac feeds into one architecture-aware feed', (
   const merged = fs.readFileSync(outputPath, 'utf8')
 
   assert.match(merged, /^version: 0\.2\.0$/m)
-  assert.match(merged, /url: Codex\.Sidecar-mac-arm64\.zip/)
+  assert.match(merged, /url: Codex-Sidecar-mac-arm64\.zip/)
   assert.match(merged, /sha512: arm64hash/)
-  assert.match(merged, /url: Codex\.Sidecar-mac-x64\.zip/)
+  assert.match(merged, /url: Codex-Sidecar-mac-x64\.zip/)
   assert.match(merged, /sha512: x64hash/)
-  assert.match(merged, /^path: Codex\.Sidecar-mac-arm64\.zip$/m)
+  assert.match(merged, /^path: Codex-Sidecar-mac-arm64\.zip$/m)
+  assert.doesNotMatch(merged, /Codex\.Sidecar/)
   assert.doesNotMatch(merged, /zip\.blockmap/)
 })

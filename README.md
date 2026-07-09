@@ -21,8 +21,8 @@
   </p>
 
   <p>
-    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-arm64.dmg">Download for Apple Silicon</a> ·
-    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-x64.dmg">Download for Intel</a>
+    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-arm64.dmg">Download for Apple Silicon</a> ·
+    <a href="https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-x64.dmg">Download for Intel</a>
   </p>
 </div>
 
@@ -107,8 +107,8 @@ Sidecar-owned data is stored locally, including favorites, instructions, selecti
 
 | Platform | Architecture | Installer |
 | --- | --- | --- |
-| macOS | Apple Silicon | [Codex.Sidecar-mac-arm64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-arm64.dmg) |
-| macOS | Intel | [Codex.Sidecar-mac-x64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex.Sidecar-mac-x64.dmg) |
+| macOS | Apple Silicon | [Codex-Sidecar-mac-arm64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-arm64.dmg) |
+| macOS | Intel | [Codex-Sidecar-mac-x64.dmg](https://github.com/eshengsky/Codex-Sidecar/releases/latest/download/Codex-Sidecar-mac-x64.dmg) |
 
 ## First Run
 
