@@ -68,7 +68,7 @@ Manage Codex tasks globally through four status indicators: running, waiting for
 
 Save conversations to Sidecar without turning them into pinned Codex conversations. Favorites are local Sidecar data, useful for conversations you will need again but do not want permanently pushed to the top.
 
-### Message Favorites And Navigation
+### Message Favorites And Index
 
 Sidecar can save a Q&A turn and search favorites by message content, project, or conversation title. Clicking a favorite opens the corresponding Codex conversation.
 

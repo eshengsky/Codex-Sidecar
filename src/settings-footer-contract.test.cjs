@@ -47,8 +47,8 @@ test('settings footer keeps brand and GitHub while version moves to the update r
 })
 
 test('auto update checks run in the background while settings only renders state', () => {
-  assert.match(autoUpdateSource, /const AUTO_UPDATE_CHECK_INTERVAL_MS = 4 \* 60 \* 60 \* 1000/)
-  assert.match(autoUpdateSource, /const AUTO_UPDATE_ACTIVE_CHECK_INTERVAL_MS = 60 \* 60 \* 1000/)
+  assert.match(autoUpdateSource, /const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 \* 60 \* 1000/)
+  assert.match(autoUpdateSource, /const AUTO_UPDATE_ACTIVE_CHECK_INTERVAL_MS = 15 \* 60 \* 1000/)
   assert.match(autoUpdateSource, /setInterval\(\(\) => \{/)
   assert.match(autoUpdateSource, /state\.status === 'checking'[\s\S]*state\.status === 'downloading'/)
   assert.match(autoUpdateSource, /autoUpdater\.on\('download-progress'/)
@@ -63,17 +63,16 @@ test('auto update checks run in the background while settings only renders state
   assert.doesNotMatch(settingsPanelSource, /checkForUpdates/)
 
   assert.match(settingsPanelSource, /const updateStatusText = computed/)
-  assert.match(settingsPanelSource, /settings\.checkingUpdate/)
+  assert.doesNotMatch(settingsPanelSource, /settings\.checkingUpdate/)
   assert.match(settingsPanelSource, /settings\.updating/)
   assert.match(settingsPanelSource, /settings\.updateCheckFailed/)
   assert.match(settingsPanelSource, /status === 'not-available'/)
   assert.doesNotMatch(settingsPanelTemplate, /settings\.upToDate/)
 
   assert.match(envSource, /'idle' \| 'checking' \| 'downloading' \| 'downloaded' \| 'not-available' \| 'error'/)
-  assert.match(i18nSource, /checkingUpdate: 'Checking\.\.\.'/)
   assert.match(i18nSource, /updating: 'Updating\.\.\.'/)
   assert.match(i18nSource, /updateCheckFailed: 'Check failed'/)
-  assert.match(i18nSource, /checkingUpdate: '正在检查\.\.\.'/)
   assert.match(i18nSource, /updating: '正在更新\.\.\.'/)
   assert.match(i18nSource, /updateCheckFailed: '检查失败'/)
+  assert.doesNotMatch(i18nSource, /checkingUpdate:/)
 })

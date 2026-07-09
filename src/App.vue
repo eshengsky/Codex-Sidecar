@@ -375,10 +375,10 @@
               <div
                 v-for="turnPreview in filteredNavigationTurnPreviews"
                 :key="turnPreview.id"
-                class="flex max-w-full flex-col items-end gap-1 self-end"
+                class="flex w-full max-w-full flex-col items-end gap-1 self-end"
               >
                 <span class="self-end text-[10px] leading-none whitespace-nowrap text-gray-500 dark:text-gray-400">{{ formatNavigationMessageTime(turnPreview.createdAt, appLocale) }}</span>
-                <div class="flex max-w-full items-start justify-end gap-1.5">
+                <div class="flex max-w-full items-center justify-end gap-1.5">
                   <UTooltip :text="isNavigationTurnBookmarked(turnPreview) ? t('bookmarks.removeTurn') : t('bookmarks.addTurn')">
                     <UButton
                       icon="i-lucide-bookmark"
@@ -389,23 +389,21 @@
                       @click="toggleNavigationTurnBookmark(turnPreview)"
                     />
                   </UTooltip>
-                  <div class="flex min-w-0 max-w-[86%] flex-col items-end gap-1">
-                    <button
-                      type="button"
-                      class="flex max-w-full rounded-xl border-0 bg-gray-100 px-3 py-2 text-left text-[13px] leading-[1.45] text-gray-900 hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 dark:bg-neutral-800 dark:text-gray-100 dark:hover:bg-neutral-700"
-                      :class="navigationJumping ? 'cursor-wait opacity-60' : 'cursor-pointer'"
-                      :disabled="navigationJumping"
-                      @click="openNavigationThread"
-                    >
-                      <span class="line-clamp-2 [overflow-wrap:anywhere]">{{ turnPreview.userPreview }}</span>
-                    </button>
-                    <div
-                      v-if="turnPreview.assistantPreview"
-                      class="flex max-w-full rounded-xl bg-gray-50 px-3 py-2 text-left text-[13px] leading-[1.45] text-gray-700 dark:bg-neutral-900 dark:text-gray-300"
-                    >
-                      <span class="line-clamp-3 [overflow-wrap:anywhere]">{{ turnPreview.assistantPreview }}</span>
-                    </div>
-                  </div>
+                  <button
+                    type="button"
+                    class="flex max-w-[86%] rounded-xl border-0 bg-gray-100 px-3 py-2 text-left text-[13px] leading-[1.45] text-gray-900 hover:bg-gray-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 dark:bg-neutral-800 dark:text-gray-100 dark:hover:bg-neutral-700"
+                    :class="navigationJumping ? 'cursor-wait opacity-60' : 'cursor-pointer'"
+                    :disabled="navigationJumping"
+                    @click="openNavigationThread"
+                  >
+                    <span class="line-clamp-2 [overflow-wrap:anywhere]">{{ turnPreview.userPreview }}</span>
+                  </button>
+                </div>
+                <div
+                  v-if="turnPreview.assistantPreview"
+                  class="flex w-full self-end px-3 py-2 text-left text-[13px] leading-[1.45] text-gray-700 dark:text-gray-300"
+                >
+                  <span class="line-clamp-3 [overflow-wrap:anywhere]">{{ turnPreview.assistantPreview }}</span>
                 </div>
               </div>
             </div>

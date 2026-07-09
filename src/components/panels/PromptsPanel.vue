@@ -96,16 +96,16 @@
       </template>
 
       <template #body>
-        <div class="flex flex-col gap-2.5">
-          <label class="flex flex-col gap-1 text-xs font-normal text-gray-500 dark:text-gray-400">
-            <span>{{ t('prompts.titleLabel') }}</span>
+        <div class="flex flex-col gap-3">
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs font-semibold text-gray-600 dark:text-gray-300">{{ t('prompts.titleLabel') }}</label>
             <UInput v-model="templateDraft.name" :placeholder="t('prompts.titlePlaceholder')" size="xs" color="neutral" autofocus />
-          </label>
+          </div>
 
-          <label class="flex flex-col gap-1 text-xs font-normal text-gray-500 dark:text-gray-400">
-            <span>{{ t('prompts.bodyLabel') }}</span>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs font-semibold text-gray-600 dark:text-gray-300">{{ t('prompts.bodyLabel') }}</label>
             <UTextarea v-model="templateDraft.body" :rows="9" :placeholder="t('prompts.bodyPlaceholder')" size="xs" color="neutral" />
-          </label>
+          </div>
         </div>
       </template>
 

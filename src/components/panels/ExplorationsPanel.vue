@@ -21,7 +21,7 @@
         :description="explorationEmptyDescription"
         variant="naked"
         size="xs"
-        class="min-h-[260px] self-center"
+        class="min-h-[220px] self-center"
       />
 
       <template v-else>

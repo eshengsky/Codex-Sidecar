@@ -187,10 +187,6 @@ const updateReady = computed(() => updateState.value?.canInstall === true)
 const updateStatusText = computed(() => {
   const status = updateState.value?.status
 
-  if (status === 'checking') {
-    return t('settings.checkingUpdate')
-  }
-
   if (status === 'downloading') {
     return t('settings.updating')
   }

@@ -1,7 +1,7 @@
 const { autoUpdater } = require('electron-updater')
 
-const AUTO_UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
-const AUTO_UPDATE_ACTIVE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+const AUTO_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+const AUTO_UPDATE_ACTIVE_CHECK_INTERVAL_MS = 15 * 60 * 1000
 
 let initialized = false
 let autoCheckTimer = null

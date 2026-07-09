@@ -16,17 +16,31 @@ test('prompt and exploration empty states separate first-use guidance from searc
 
   assert.match(explorationsPanelSource, /:title="explorationEmptyTitle"/)
   assert.match(explorationsPanelSource, /:description="explorationEmptyDescription"/)
+  assert.match(promptsPanelSource, /class="min-h-\[220px\] self-center"/)
+  assert.match(explorationsPanelSource, /class="min-h-\[220px\] self-center"/)
   assert.match(explorationsPanelSource, /const hasExplorationSearch = computed\(\(\) => searchTerm\.value\.trim\(\)\.length > 0\)/)
   assert.match(explorationsPanelSource, /hasExplorationSearch\.value \? t\('explorations\.emptySearchTitle'\) : t\('explorations\.emptyTitle'\)/)
   assert.match(explorationsPanelSource, /hasExplorationSearch\.value \? t\('explorations\.emptySearchDescription'\) : t\('explorations\.emptyDescription'\)/)
 
   assert.match(messagesSource, /emptyTitle: '还没有指令'/)
-  assert.match(messagesSource, /emptyDescription: '保存常用、临时、需要复制到 Codex 的指令文本。长期规则放 AGENTS\.md，固定流程做成 skill。'/)
+  assert.match(messagesSource, /emptyDescription: '指令用于保存临时或常用提示，一键复制到 Codex 使用。'/)
   assert.match(messagesSource, /emptySearchTitle: '没有匹配的指令'/)
   assert.match(messagesSource, /emptySearchDescription: '换个关键词试试，或新增一条指令。'/)
 
-  assert.match(messagesSource, /emptyTitle: '还没有优选记录'/)
-  assert.match(messagesSource, /emptyDescription: '让多个只读 Codex 独立回答同一问题，再汇总对比生成结果。适合方案判断和复杂问题。'/)
+  assert.match(messagesSource, /emptyTitle: '还没有优选'/)
+  assert.match(messagesSource, /emptyDescription: '优选用于并行生成多个只读候选，再汇总成结果。适合方案判断和复杂问题。'/)
   assert.match(messagesSource, /emptySearchTitle: '没有匹配的优选'/)
   assert.match(messagesSource, /emptySearchDescription: '换个关键词试试，或新建一次优选。'/)
+})
+
+test('prompt modal labels use the same emphasis as exploration modal labels', () => {
+  const promptModalBody = promptsPanelSource.slice(
+    promptsPanelSource.indexOf('<template #body>'),
+    promptsPanelSource.indexOf('<template #footer>')
+  )
+
+  assert.match(explorationsPanelSource, /<label class="text-xs font-semibold text-gray-600 dark:text-gray-300">{{ t\('explorations\.context'\) }}<\/label>/)
+  assert.match(promptModalBody, /<label class="text-xs font-semibold text-gray-600 dark:text-gray-300">{{ t\('prompts\.titleLabel'\) }}<\/label>/)
+  assert.match(promptModalBody, /<label class="text-xs font-semibold text-gray-600 dark:text-gray-300">{{ t\('prompts\.bodyLabel'\) }}<\/label>/)
+  assert.doesNotMatch(promptModalBody, /font-normal text-gray-500 dark:text-gray-400/)
 })
