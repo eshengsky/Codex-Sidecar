@@ -1,7 +1,12 @@
 const { autoUpdater } = require('electron-updater')
 
+const AUTO_UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
+const AUTO_UPDATE_ACTIVE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+
 let initialized = false
 let autoCheckTimer = null
+let autoCheckInterval = null
+let lastCheckAt = 0
 let appRef = null
 let getWindows = () => []
 let beforeQuitForUpdate = () => {}
@@ -59,7 +64,7 @@ const bindAutoUpdaterEvents = () => {
 
   autoUpdater.on('update-available', info => {
     setUpdateState({
-      status: 'checking',
+      status: 'downloading',
       downloadedVersion: info?.version || null,
       error: null,
       canInstall: false
@@ -68,8 +73,16 @@ const bindAutoUpdaterEvents = () => {
 
   autoUpdater.on('update-not-available', () => {
     setUpdateState({
-      status: 'idle',
+      status: 'not-available',
       downloadedVersion: null,
+      error: null,
+      canInstall: false
+    })
+  })
+
+  autoUpdater.on('download-progress', () => {
+    setUpdateState({
+      status: 'downloading',
       error: null,
       canInstall: false
     })
@@ -98,11 +111,17 @@ const bindAutoUpdaterEvents = () => {
 }
 
 const checkForUpdates = async () => {
-  if (!state.isPackaged || state.status === 'downloaded') {
+  if (
+    !state.isPackaged ||
+    state.status === 'downloaded' ||
+    state.status === 'checking' ||
+    state.status === 'downloading'
+  ) {
     return getUpdateState()
   }
 
   try {
+    lastCheckAt = Date.now()
     await autoUpdater.checkForUpdates()
   } catch (error) {
     setUpdateState({
@@ -116,14 +135,37 @@ const checkForUpdates = async () => {
 }
 
 const scheduleAutoUpdateCheck = (delayMs = 15_000) => {
-  if (!state.isPackaged || autoCheckTimer) {
+  if (!state.isPackaged) {
     return
   }
 
-  autoCheckTimer = setTimeout(() => {
-    autoCheckTimer = null
-    void checkForUpdates()
-  }, delayMs)
+  if (!autoCheckTimer) {
+    autoCheckTimer = setTimeout(() => {
+      autoCheckTimer = null
+      void checkForUpdates()
+    }, delayMs)
+    autoCheckTimer.unref?.()
+  }
+
+  if (!autoCheckInterval) {
+    autoCheckInterval = setInterval(() => {
+      void checkForUpdates()
+    }, AUTO_UPDATE_CHECK_INTERVAL_MS)
+    autoCheckInterval.unref?.()
+  }
+}
+
+const maybeCheckForUpdatesAfterIdle = () => {
+  if (!state.isPackaged || state.status === 'downloaded') {
+    return getUpdateState()
+  }
+
+  if (Date.now() - lastCheckAt < AUTO_UPDATE_ACTIVE_CHECK_INTERVAL_MS) {
+    return getUpdateState()
+  }
+
+  void checkForUpdates()
+  return getUpdateState()
 }
 
 const installUpdate = () => {
@@ -174,5 +216,6 @@ module.exports = {
   getUpdateState,
   initializeAutoUpdate,
   installUpdate,
+  maybeCheckForUpdatesAfterIdle,
   scheduleAutoUpdateCheck
 }

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, screen, shell } = require('electron')
+const { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, powerMonitor, screen, shell } = require('electron')
 const { spawn, spawnSync } = require('node:child_process')
 const crypto = require('node:crypto')
 const { EventEmitter } = require('node:events')
@@ -26,6 +26,7 @@ const {
   getUpdateState,
   initializeAutoUpdate,
   installUpdate,
+  maybeCheckForUpdatesAfterIdle,
   scheduleAutoUpdateCheck
 } = require('./auto-update.cjs')
 const { version: APP_VERSION } = require('../package.json')
@@ -4562,12 +4563,19 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
+      maybeCheckForUpdatesAfterIdle()
       return
     }
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
     }
+
+    maybeCheckForUpdatesAfterIdle()
+  })
+
+  powerMonitor.on('resume', () => {
+    maybeCheckForUpdatesAfterIdle()
   })
 })
 

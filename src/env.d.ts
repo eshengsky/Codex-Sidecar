@@ -26,7 +26,7 @@ interface MiniDragPoint {
 }
 
 interface SidecarUpdateState {
-  status: 'idle' | 'checking' | 'downloaded' | 'error'
+  status: 'idle' | 'checking' | 'downloading' | 'downloaded' | 'not-available' | 'error'
   currentVersion: string
   downloadedVersion: string | null
   error: string | null

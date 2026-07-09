@@ -157,6 +157,9 @@ export const messages = {
       data: 'Data backup',
       version: 'Version',
       upToDate: 'Up to date',
+      checkingUpdate: 'Checking...',
+      updating: 'Updating...',
+      updateCheckFailed: 'Check failed',
       restartUpdate: 'Restart to update',
       languageOptions: {
         auto: 'Auto',
@@ -375,6 +378,9 @@ export const messages = {
       data: '数据备份',
       version: '版本',
       upToDate: '已是最新',
+      checkingUpdate: '正在检查...',
+      updating: '正在更新...',
+      updateCheckFailed: '检查失败',
       restartUpdate: '重启更新',
       languageOptions: {
         auto: '自动',

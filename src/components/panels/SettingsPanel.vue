@@ -117,8 +117,8 @@
       >
         {{ t('settings.restartUpdate') }}
       </UButton>
-      <span v-else class="flex-none text-xs leading-none text-gray-500 dark:text-gray-400">
-        {{ t('settings.upToDate') }}
+      <span v-else-if="updateStatusText" class="flex-none text-xs leading-none text-gray-500 dark:text-gray-400">
+        {{ updateStatusText }}
       </span>
     </article>
 
@@ -184,6 +184,27 @@ let showMiniPromptsMutationVersion = 0
 let unsubscribeUpdateState: (() => void) | null = null
 
 const updateReady = computed(() => updateState.value?.canInstall === true)
+const updateStatusText = computed(() => {
+  const status = updateState.value?.status
+
+  if (status === 'checking') {
+    return t('settings.checkingUpdate')
+  }
+
+  if (status === 'downloading') {
+    return t('settings.updating')
+  }
+
+  if (status === 'not-available') {
+    return t('settings.upToDate')
+  }
+
+  if (status === 'error') {
+    return t('settings.updateCheckFailed')
+  }
+
+  return ''
+})
 
 const isLanguageMode = (value: unknown): value is LanguageMode => value === 'auto' || value === 'en' || value === 'zh'
 const isThemeMode = (value: unknown): value is ThemeMode => value === 'auto' || value === 'light' || value === 'dark'
