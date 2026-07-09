@@ -125,6 +125,8 @@
     <footer class="mt-auto flex flex-none items-center justify-center gap-1.5 pt-2 text-xs leading-none text-gray-500 dark:text-gray-400">
       <span>Codex Sidecar</span>
       <span aria-hidden="true">&middot;</span>
+      <span>MIT License</span>
+      <span aria-hidden="true">&middot;</span>
       <button
         type="button"
         class="cursor-pointer border-0 bg-transparent p-0 text-xs leading-none text-gray-500 underline-offset-2 hover:text-gray-900 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
