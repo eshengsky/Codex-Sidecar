@@ -13,6 +13,7 @@ const lucideIconNames = [
   'bookmark-x',
   'check',
   'check-check',
+  'chart-spline',
   'chevron-down',
   'chevron-left',
   'chevron-right',

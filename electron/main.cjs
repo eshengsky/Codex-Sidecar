@@ -23,6 +23,13 @@ const {
   evaluateSidecarHookStatus
 } = require('./sidecar-hooks.cjs')
 const {
+  normalizeAccountUsageResponse
+} = require('./account-usage.cjs')
+const {
+  readLocalTodayTokenEstimateForThread,
+  toLocalDateKey
+} = require('./account-usage-estimate.cjs')
+const {
   getUpdateState,
   initializeAutoUpdate,
   installUpdate,
@@ -41,7 +48,8 @@ const CONTEXT_USAGE_TRANSCRIPT_REFRESH_GRACE_MS = 5000
 const POST_OPEN_CODEX_STORE_DELAYS_MS = [300, 1000, 2500]
 const HOOK_EVENT_PROCESS_DEBOUNCE_MS = 120
 const NATIVE_UNREAD_REFRESH_DELAY_MS = 250
-const RATE_LIMITS_BACKGROUND_REFRESH_INTERVAL_MS = 60_000
+const RATE_LIMITS_BACKGROUND_REFRESH_INTERVAL_MS = 15_000
+const ACCOUNT_USAGE_BACKGROUND_REFRESH_INTERVAL_MS = 60_000
 const THREAD_CONTINUATION_SUMMARY_TIMEOUT_MS = 6 * 60 * 60_000
 const THREAD_CONTINUATION_TEXT_GRACE_MS = 3000
 const EXPLORATION_TURN_TIMEOUT_MS = 10 * 60_000
@@ -95,6 +103,9 @@ let cachedNativeUnread = null
 let cachedRateLimits = null
 let cachedRateLimitsUpdatedAt = 0
 let rateLimitsRefreshPromise = null
+let cachedAccountUsage = null
+let cachedAccountUsageUpdatedAt = 0
+let accountUsageRefreshPromise = null
 let windowStateWriteQueue = Promise.resolve()
 let sidecarStore = null
 let windowState = null
@@ -125,7 +136,7 @@ const RUNTIME_CORRECTION_STATUSES = new Set(['running', 'waiting', 'failed'])
 const AGENT_OUTPUT_ITEM_TYPES = new Set(['agentMessage'])
 const LANGUAGE_MODES = new Set(['auto', 'en', 'zh'])
 const THEME_MODES = new Set(['auto', 'light', 'dark'])
-const FULL_PANEL_KEYS = new Set(['threads', 'bookmarks', 'explorations', 'prompts', 'data'])
+const FULL_PANEL_KEYS = new Set(['threads', 'bookmarks', 'explorations', 'prompts', 'usage', 'data'])
 const EXPLORATION_RUN_STATUSES = new Set(['running', 'summarizing', 'completed', 'partialFailed', 'failed'])
 const EXPLORATION_CANDIDATE_STATUSES = new Set(['pending', 'running', 'completed', 'failed'])
 const EXPLORATION_SUMMARY_STATUSES = new Set(['pending', 'running', 'completed', 'failed'])
@@ -1268,6 +1279,10 @@ const handleCodexNotification = async message => {
     if (contextUsage) {
       persistContextUsage(contextUsage)
     }
+
+    if (codexClient) {
+      refreshAccountUsageInBackground(codexClient, { force: true })
+    }
   }
 
   if (message.method === 'account/rateLimits/updated' && codexClient) {
@@ -2144,7 +2159,7 @@ const getRecentActivity = (thread, latestTurnStatus, sidecarStatus) => {
   return thread.preview || '暂无活动摘要'
 }
 
-const normalizeRateLimitWindow = (label, limitWindow) => {
+const normalizeRateLimitWindow = limitWindow => {
   if (!limitWindow) {
     return null
   }
@@ -2152,7 +2167,7 @@ const normalizeRateLimitWindow = (label, limitWindow) => {
   const usedPercent = Math.round(limitWindow.usedPercent ?? 0)
 
   return {
-    label,
+    label: typeof limitWindow.label === 'string' ? limitWindow.label : null,
     usedPercent,
     remainingPercent: Math.max(0, Math.min(100, 100 - usedPercent)),
     windowDurationMins: limitWindow.windowDurationMins ?? null,
@@ -2167,8 +2182,8 @@ const normalizeRateLimits = response => {
   return {
     limitId: primaryRateLimit?.limitId || null,
     limitName: primaryRateLimit?.limitName || null,
-    primary: normalizeRateLimitWindow('5 小时', primaryRateLimit?.primary),
-    secondary: normalizeRateLimitWindow('1 周', primaryRateLimit?.secondary)
+    primary: normalizeRateLimitWindow(primaryRateLimit?.primary),
+    secondary: normalizeRateLimitWindow(primaryRateLimit?.secondary)
   }
 }
 
@@ -2204,6 +2219,96 @@ const refreshRateLimitsInBackground = (client, { force = false } = {}) => {
     .catch(() => {
       // Rate limits are auxiliary UI data; failed refreshes should not block thread state.
     })
+}
+
+const refreshAccountUsage = async client => {
+  if (accountUsageRefreshPromise) {
+    return accountUsageRefreshPromise
+  }
+
+  accountUsageRefreshPromise = client.request('account/usage/read', undefined, 12000)
+    .then(response => {
+      const normalizedUsage = normalizeAccountUsageResponse(response)
+
+      if (normalizedUsage) {
+        cachedAccountUsage = normalizedUsage
+        cachedAccountUsageUpdatedAt = Date.now()
+      }
+
+      return cachedAccountUsage
+    })
+    .finally(() => {
+      accountUsageRefreshPromise = null
+    })
+
+  return accountUsageRefreshPromise
+}
+
+const refreshAccountUsageInBackground = (client, { force = false } = {}) => {
+  const stale = !cachedAccountUsage || Date.now() - cachedAccountUsageUpdatedAt > ACCOUNT_USAGE_BACKGROUND_REFRESH_INTERVAL_MS
+
+  if (accountUsageRefreshPromise || (!force && !stale)) {
+    return
+  }
+
+  void refreshAccountUsage(client)
+    .then(() => {
+      scheduleCodexStoreBroadcast()
+    })
+    .catch(() => {
+      // Account usage is auxiliary UI data; failed refreshes should not block thread state.
+    })
+}
+
+const shouldReadLocalTodayTokenEstimate = (thread, todayKey) => {
+  if (!thread?.path) {
+    return false
+  }
+
+  const updatedAt = epochSecondsToMs(thread.updatedAt)
+  const createdAt = epochSecondsToMs(thread.createdAt)
+
+  return [updatedAt, createdAt].some(value => {
+    return value && toLocalDateKey(new Date(value)) === todayKey
+  })
+}
+
+const readLocalTodayTokenEstimate = async threads => {
+  const todayKey = toLocalDateKey(new Date())
+  const candidates = threads.filter(thread => shouldReadLocalTodayTokenEstimate(thread, todayKey))
+  const estimates = await mapLimit(candidates, 4, thread => readLocalTodayTokenEstimateForThread(thread, todayKey))
+  const validEstimates = estimates.filter(Boolean)
+  const updatedAtValues = validEstimates
+    .map(estimate => estimate.updatedAt)
+    .filter(value => typeof value === 'number' && Number.isFinite(value))
+
+  return {
+    date: todayKey,
+    tokens: validEstimates.reduce((total, estimate) => total + estimate.tokens, 0),
+    source: 'localTranscript',
+    threadCount: validEstimates.length,
+    eventCount: validEstimates.reduce((total, estimate) => total + estimate.eventCount, 0),
+    updatedAt: updatedAtValues.length > 0 ? Math.max(...updatedAtValues) : Date.now()
+  }
+}
+
+const accountUsageForCodexStore = (accountUsage, localTodayEstimate) => {
+  const base = accountUsage || {
+    summary: {
+      lifetimeTokens: 0,
+      peakDailyTokens: 0,
+      longestRunningTurnSec: 0,
+      currentStreakDays: 0,
+      longestStreakDays: 0
+    },
+    dailyUsageBuckets: [],
+    updatedAt: Date.now()
+  }
+
+  return {
+    ...base,
+    localTodayEstimate
+  }
 }
 
 const getContextUsageForThread = (contextUsageByThread, thread) => {
@@ -2253,8 +2358,10 @@ const createCodexStore = async () => {
   const unreadSet = new Set(nativeUnread.available ? nativeUnread.ids : [])
   const client = await getCodexClient()
   const threads = await listAllThreads(client)
+  const localTodayEstimate = await readLocalTodayTokenEstimate(threads)
 
   refreshRateLimitsInBackground(client)
+  refreshAccountUsageInBackground(client)
   await hydrateRecentContextUsageFromTranscripts(threads, contextUsageByThread)
 
   runtimeState = await reconcileRuntimeStateWithTranscript(runtimeState)
@@ -2341,6 +2448,7 @@ const createCodexStore = async () => {
       error: nativeUnread.error
     },
     rateLimits: cachedRateLimits,
+    accountUsage: accountUsageForCodexStore(cachedAccountUsage, localTodayEstimate),
     threads: summaries
   }
 }
@@ -2360,6 +2468,7 @@ const safeCodexStore = async () => {
         ids: undefined
       },
       rateLimits: cachedRateLimits,
+      accountUsage: cachedAccountUsage,
       threads: [],
       error: error instanceof Error ? error.message : String(error)
     }

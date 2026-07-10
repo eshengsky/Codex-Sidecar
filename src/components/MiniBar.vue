@@ -59,7 +59,7 @@
 
       <div class="h-4 w-px flex-none bg-gray-200 dark:bg-neutral-800" />
 
-      <div class="flex min-w-0 flex-none items-center gap-1.5 overflow-hidden text-xs whitespace-nowrap">
+      <div class="flex min-w-0 flex-none items-center gap-1 overflow-hidden text-xs whitespace-nowrap">
         <button
           type="button"
           class="group inline-flex text-[11px] h-4 w-6 flex-none cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 text-gray-500 [-webkit-app-region:no-drag] hover:text-gray-950 focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-gray-400 dark:text-gray-400 dark:hover:text-gray-100"
@@ -71,15 +71,51 @@
         </button>
         <template v-if="rateLimits?.primary || rateLimits?.secondary">
           <span v-if="rateLimits?.primary" class="inline-flex items-baseline gap-0.5 text-gray-500 dark:text-gray-400">
-            <span>5h</span>
-            <UTooltip :text="formatRateLimitReset(rateLimits.primary)" :content="percentTooltipContent">
-              <span class="numeric-mono [-webkit-app-region:no-drag]" :class="usageTextClass(rateLimits.primary)">{{ usagePercent(rateLimits.primary) }}%</span>
+            <span>{{ formatMiniRateLimitLabel(rateLimits.primary) }}</span>
+            <UTooltip
+              :text="formatRateLimitReset(rateLimits.primary)"
+              :content="miniTooltipContent"
+            >
+              <span
+                class="numeric-mono [-webkit-app-region:no-drag]"
+                :class="usageTextClass(rateLimits.primary)"
+                :aria-label="formatRateLimitReset(rateLimits.primary)"
+              >{{ usagePercent(rateLimits.primary) }}%</span>
+            </UTooltip>
+            <UTooltip
+              v-if="isUsageAheadOfTime(rateLimits.primary)"
+              :text="formatUsagePaceTooltip()"
+              :content="miniTooltipContent"
+            >
+              <span
+                class="leading-none font-bold text-amber-600 [-webkit-app-region:no-drag] dark:text-amber-300"
+                data-mini-drag-ignore="true"
+                :aria-label="formatUsagePaceTooltip()"
+              >!</span>
             </UTooltip>
           </span>
-          <span v-if="rateLimits?.secondary" class="inline-flex items-baseline gap-0.5 text-gray-500 dark:text-gray-400">
-            <span>7d</span>
-            <UTooltip :text="formatRateLimitReset(rateLimits.secondary)" :content="percentTooltipContent">
-              <span class="numeric-mono [-webkit-app-region:no-drag]" :class="usageTextClass(rateLimits.secondary)">{{ usagePercent(rateLimits.secondary) }}%</span>
+          <span v-if="rateLimits?.secondary" class="inline-flex items-baseline ml-0.5 gap-0.5 text-gray-500 dark:text-gray-400">
+            <span>{{ formatMiniRateLimitLabel(rateLimits.secondary) }}</span>
+            <UTooltip
+              :text="formatRateLimitReset(rateLimits.secondary)"
+              :content="miniTooltipContent"
+            >
+              <span
+                class="numeric-mono [-webkit-app-region:no-drag]"
+                :class="usageTextClass(rateLimits.secondary)"
+                :aria-label="formatRateLimitReset(rateLimits.secondary)"
+              >{{ usagePercent(rateLimits.secondary) }}%</span>
+            </UTooltip>
+            <UTooltip
+              v-if="isUsageAheadOfTime(rateLimits.secondary)"
+              :text="formatUsagePaceTooltip()"
+              :content="miniTooltipContent"
+            >
+              <span
+                class="leading-none font-bold text-amber-600 [-webkit-app-region:no-drag] dark:text-amber-300"
+                data-mini-drag-ignore="true"
+                :aria-label="formatUsagePaceTooltip()"
+              >!</span>
             </UTooltip>
           </span>
         </template>
@@ -112,16 +148,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AppLocale, PromptTemplate, RateLimitSummary, RateLimitWindow, UsageDisplayMode } from '@/types/sidecar'
 import { formatResetDateTime } from '@/utils/format'
+import { formatRateLimitWindowShortLabel } from '@/utils/rate-limit-window-label'
+import { isRateLimitUsageAheadOfTime } from '@/utils/rate-limit-time-reference'
 import { usageToneClass } from '@/utils/tailwind'
 
 type StatusClickKey = 'completedUnread' | 'running' | 'waiting' | 'failed'
 type MiniDragPoint = { screenX: number, screenY: number }
 
-const percentTooltipContent = {
+const miniTooltipContent = {
   side: 'left',
   sideOffset: 4,
   collisionPadding: 4
@@ -129,7 +167,9 @@ const percentTooltipContent = {
 
 const { t, locale } = useI18n()
 const appLocale = computed<AppLocale>(() => locale.value === 'zh' ? 'zh' : 'en')
+const nowMs = ref(Date.now())
 let activeDragPointerId: number | null = null
+let nowInterval: ReturnType<typeof setInterval> | null = null
 
 defineEmits<{
   expand: []
@@ -227,7 +267,36 @@ const usageTextClass = (window: RateLimitWindow) => {
   return usageToneClass(window.usedPercent).text
 }
 
+const formatMiniRateLimitLabel = (window: RateLimitWindow) => {
+  return formatRateLimitWindowShortLabel(window.windowDurationMins, window.label)
+}
+
 const formatRateLimitReset = (window: RateLimitWindow) => {
   return `${t('usage.reset')} ${formatResetDateTime(window.resetsAt, appLocale.value)}`
 }
+
+const isUsageAheadOfTime = (window: RateLimitWindow) => {
+  return isRateLimitUsageAheadOfTime({
+    usedPercent: window.usedPercent,
+    windowDurationMins: window.windowDurationMins,
+    resetsAt: window.resetsAt,
+    nowMs: nowMs.value
+  })
+}
+
+const formatUsagePaceTooltip = () => {
+  return t('usage.timePaceAhead')
+}
+
+onMounted(() => {
+  nowInterval = setInterval(() => {
+    nowMs.value = Date.now()
+  }, 60 * 1000)
+})
+
+onUnmounted(() => {
+  if (nowInterval) {
+    clearInterval(nowInterval)
+  }
+})
 </script>

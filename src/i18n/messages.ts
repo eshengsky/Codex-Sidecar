@@ -39,6 +39,7 @@ export const messages = {
       bookmarks: 'Favorites',
       explorations: 'Select',
       prompts: 'Instructions',
+      usage: 'Usage',
       settings: 'Settings',
       ariaLabel: 'Sidecar panels'
     },
@@ -195,14 +196,61 @@ export const messages = {
       reset: 'Reset',
       toggleToUsed: 'Switch to used amount',
       toggleToRemaining: 'Switch to remaining amount',
-      windowFiveHours: '5 hours',
-      windowOneWeek: '1 week',
-      referencePoint: 'Reference point {index}',
+      timeReference: 'Time reference point',
+      timeReferenceTooltipUsed: 'Above reference = faster token use',
+      timeReferenceTooltipRemaining: 'Below reference = faster token use',
+      timePaceAhead: 'Token use outpaces time',
       resetUnknown: 'Reset time unknown',
       veryLowTitle: 'Very low usage remaining',
       veryLowDescription: 'Consider switching to a faster or lower-cost model before starting long tasks.',
       lowTitle: 'Usage remaining is low',
       lowDescription: 'For larger tasks, consider using a faster or lower-cost model.'
+    },
+    usageStats: {
+      emptyTitle: 'No token usage yet',
+      emptyDescription: 'Usage appears after Codex returns account token activity.',
+      todayStatus: 'Today',
+      trend: 'Token trend',
+      updatedAt: 'Updated {time}',
+      dimension: 'Trend dimension',
+      dimensions: {
+        day: 'Day',
+        week: 'Week',
+        month: 'Month'
+      },
+      tokens: 'Tokens',
+      average: 'Moving avg',
+      averageLabels: {
+        day: '{count}-day avg',
+        week: '{count}-week avg',
+        month: '{count}-month avg'
+      },
+      cards: {
+        today: 'Today',
+        yesterday: 'Yesterday',
+        week: 'This week',
+        month: 'This month'
+      },
+      status: {
+        description: '{ratio}x recent average · 7-day avg {average} · vs yesterday {delta}',
+        deltaUnknown: 'unknown',
+        insufficient: {
+          title: 'Not enough data',
+          description: 'Recent history is not enough to classify today.'
+        },
+        low: {
+          title: 'Low'
+        },
+        normal: {
+          title: 'Normal'
+        },
+        high: {
+          title: 'High'
+        },
+        veryHigh: {
+          title: 'Very high'
+        }
+      }
     },
     feedback: {
       copied: 'Copied to clipboard',
@@ -242,7 +290,7 @@ export const messages = {
       openSettings: '打开 Codex 设置',
       steps: {
         openSettings: '打开 Codex 设置',
-        openHooks: '进入 Hooks',
+        openHooks: '打开钩子（Hooks）',
         trustHooks: '信任并启用所有 Sidecar hooks'
       },
       status: {
@@ -259,6 +307,7 @@ export const messages = {
       bookmarks: '收藏',
       explorations: '优选',
       prompts: '指令',
+      usage: '用量',
       settings: '设置',
       ariaLabel: 'Sidecar 面板'
     },
@@ -415,14 +464,61 @@ export const messages = {
       reset: '重置',
       toggleToUsed: '切换为已使用量',
       toggleToRemaining: '切换为剩余用量',
-      windowFiveHours: '5 小时',
-      windowOneWeek: '1 周',
-      referencePoint: '参考点{index}',
+      timeReference: '时间参考点',
+      timeReferenceTooltipUsed: '超过参考点表示 Token 消耗快于时间进度',
+      timeReferenceTooltipRemaining: '低于参考点表示 Token 消耗快于时间进度',
+      timePaceAhead: 'Token 消耗快于时间进度',
       resetUnknown: '重置时间未知',
       veryLowTitle: '剩余用量很低',
       veryLowDescription: '后续任务建议切换更快或更低成本模型，避免长任务被限制。',
       lowTitle: '剩余用量偏低',
       lowDescription: '后续大任务可以考虑使用更快或更低成本模型。'
+    },
+    usageStats: {
+      emptyTitle: '暂无 token 用量',
+      emptyDescription: 'Codex 返回账号 token 活动后会显示在这里。',
+      todayStatus: '今日状态',
+      trend: 'Token 趋势',
+      updatedAt: '更新于 {time}',
+      dimension: '统计维度',
+      dimensions: {
+        day: '日',
+        week: '周',
+        month: '月'
+      },
+      tokens: 'Token',
+      average: '均线',
+      averageLabels: {
+        day: '{count} 日均线',
+        week: '{count} 周均线',
+        month: '{count} 月均线'
+      },
+      cards: {
+        today: '今天',
+        yesterday: '昨天',
+        week: '本周',
+        month: '本月'
+      },
+      status: {
+        description: '约为近期均值 {ratio}x · 7 日均值 {average} · 较昨日 {delta}',
+        deltaUnknown: '未知',
+        insufficient: {
+          title: '数据不足',
+          description: '近期历史数据不足，暂不判断今日状态。'
+        },
+        low: {
+          title: '偏低'
+        },
+        normal: {
+          title: '正常'
+        },
+        high: {
+          title: '偏高'
+        },
+        veryHigh: {
+          title: '很高'
+        }
+      }
     },
     feedback: {
       copied: '已复制到剪贴板',

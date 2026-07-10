@@ -199,15 +199,6 @@
           :title="t('app.dataReadFailed')"
           :description="codexStore.error"
         />
-
-        <UAlert
-          v-else-if="usageWarning"
-          :color="usageWarning.color"
-          variant="soft"
-          icon="i-lucide-triangle-alert"
-          :title="usageWarning.title"
-          :description="usageWarning.description"
-        />
       </section>
 
       <section class="flex min-w-0 items-center gap-1">
@@ -295,6 +286,13 @@
         @save="savePromptTemplates"
         @copied="setFeedback(t('feedback.copied'))"
         @failed="setFeedback"
+      />
+
+      <UsageStatsPanel
+        v-else-if="activePanel === 'usage'"
+        :account-usage="codexStore?.accountUsage || null"
+        :app-locale="appLocale"
+        :loading="loading"
       />
 
       <SettingsPanel
@@ -492,6 +490,7 @@ import MarkdownBlock from '@/components/MarkdownBlock.vue'
 import PromptsPanel from '@/components/panels/PromptsPanel.vue'
 import SettingsPanel from '@/components/panels/SettingsPanel.vue'
 import ThreadsPanel from '@/components/panels/ThreadsPanel.vue'
+import UsageStatsPanel from '@/components/panels/UsageStatsPanel.vue'
 import PopupMenu from '@/components/PopupMenu.vue'
 import UsageMeter from '@/components/UsageMeter.vue'
 import { applyI18nLanguageMode } from '@/i18n'
@@ -499,7 +498,7 @@ import type { AppLocale, CodexStore, ExplorationCandidate, ExplorationRun, Favor
 import { formatNavigationMessageTime, formatResetDateTime } from '@/utils/format'
 
 type StatusTileKey = 'completedUnread' | 'running' | 'waiting' | 'failed'
-type PanelKey = 'threads' | 'bookmarks' | 'explorations' | 'prompts' | 'data'
+type PanelKey = 'threads' | 'bookmarks' | 'explorations' | 'prompts' | 'usage' | 'data'
 type StatusTileTone = 'completed' | 'running' | 'waiting' | 'failed'
 type WindowMode = 'mini' | 'full' | 'popup-menu' | 'exploration-result'
 type ExplorationResultTabKey = 'summary' | `candidate:${string}`
@@ -685,6 +684,7 @@ const panels = computed<Array<{ key: PanelKey, label: string, icon: string }>>((
   { key: 'bookmarks', label: t('panels.bookmarks'), icon: 'i-lucide-bookmark' },
   { key: 'explorations', label: t('panels.explorations'), icon: 'i-lucide-sparkles' },
   { key: 'prompts', label: t('panels.prompts'), icon: 'i-lucide-pencil-sparkles' },
+  { key: 'usage', label: t('panels.usage'), icon: 'i-lucide-chart-spline' },
   { key: 'data', label: t('panels.settings'), icon: 'i-lucide-settings' }
 ])
 

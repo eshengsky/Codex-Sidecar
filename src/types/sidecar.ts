@@ -85,7 +85,7 @@ export interface ThreadSummary {
 export type CodexStoreThreadSummary = Omit<ThreadSummary, 'favorite'>
 
 export interface RateLimitWindow {
-  label: string
+  label: string | null
   usedPercent: number
   remainingPercent: number
   windowDurationMins: number | null
@@ -97,6 +97,35 @@ export interface RateLimitSummary {
   limitName: string | null
   primary: RateLimitWindow | null
   secondary: RateLimitWindow | null
+}
+
+export interface AccountUsageDailyBucket {
+  startDate: string
+  tokens: number
+}
+
+export interface AccountUsageSummary {
+  lifetimeTokens: number
+  peakDailyTokens: number
+  longestRunningTurnSec: number
+  currentStreakDays: number
+  longestStreakDays: number
+}
+
+export interface AccountUsageLocalTodayEstimate {
+  date: string
+  tokens: number
+  source: 'localTranscript'
+  threadCount: number
+  eventCount: number
+  updatedAt: number
+}
+
+export interface AccountUsage {
+  summary: AccountUsageSummary
+  dailyUsageBuckets: AccountUsageDailyBucket[]
+  updatedAt: number
+  localTodayEstimate?: AccountUsageLocalTodayEstimate | null
 }
 
 export interface ThreadFavoriteItem {
@@ -249,6 +278,7 @@ export interface CodexStore {
   }
   nativeUnread: NativeUnreadState
   rateLimits: RateLimitSummary | null
+  accountUsage: AccountUsage | null
   threads: CodexStoreThreadSummary[]
   error?: string
 }
