@@ -283,6 +283,12 @@ export interface CodexStore {
   error?: string
 }
 
+export interface CodexProjection {
+  generation: number
+  revision: number
+  codexStore: CodexStore | null
+}
+
 export interface OpenNewThreadOptions {
   prompt?: string
   path?: string

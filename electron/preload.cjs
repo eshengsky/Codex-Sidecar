@@ -1,7 +1,14 @@
 const { contextBridge, ipcRenderer } = require('electron')
+const { createRendererProjectionStream } = require('./data-engine/renderer-stream.cjs')
+
+const projectionStream = createRendererProjectionStream()
+
+ipcRenderer.on('sidecar:dataPort', (event, metadata = {}) => {
+  projectionStream.replacePort(event.ports[0], metadata.generation)
+})
 
 contextBridge.exposeInMainWorld('sidecar', {
-  getCodexStore: options => ipcRenderer.invoke('sidecar:getCodexStore', options),
+  getCodexProjection: () => ipcRenderer.invoke('sidecar:getCodexProjection'),
   getSidecarData: () => ipcRenderer.invoke('sidecar:getSidecarData'),
   getHookStatus: options => ipcRenderer.invoke('sidecar:getHookStatus', options),
   openCodexSettings: () => ipcRenderer.invoke('sidecar:openCodexSettings'),
@@ -19,6 +26,7 @@ contextBridge.exposeInMainWorld('sidecar', {
   importData: () => ipcRenderer.invoke('sidecar:importData'),
   openThread: threadId => ipcRenderer.invoke('sidecar:openThread', threadId),
   continueThreadWithSummary: (threadId, cwd, sourceUpdatedAt) => ipcRenderer.invoke('sidecar:continueThreadWithSummary', threadId, cwd, sourceUpdatedAt),
+  getContinuationResult: threadId => ipcRenderer.invoke('sidecar:getContinuationResult', threadId),
   setContinuationResultUnread: (threadId, unread) => ipcRenderer.invoke('sidecar:setContinuationResultUnread', threadId, unread),
   chooseExplorationImages: () => ipcRenderer.invoke('sidecar:chooseExplorationImages'),
   createExplorationRun: request => ipcRenderer.invoke('sidecar:createExplorationRun', request),
@@ -68,15 +76,7 @@ contextBridge.exposeInMainWorld('sidecar', {
       ipcRenderer.removeListener('sidecar:popupMenuData', listener)
     }
   },
-  onCodexStore: callback => {
-    const listener = (_event, codexStore) => callback(codexStore)
-
-    ipcRenderer.on('sidecar:codexStore', listener)
-
-    return () => {
-      ipcRenderer.removeListener('sidecar:codexStore', listener)
-    }
-  },
+  onCodexProjection: callback => projectionStream.subscribe(callback),
   onSidecarDataChanged: callback => {
     const listener = (_event, sidecarData) => callback(sidecarData)
 

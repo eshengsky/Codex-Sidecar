@@ -1,5 +1,3 @@
-const fsp = require('node:fs/promises')
-
 const toFiniteNumber = value => {
   const number = Number(value)
   return Number.isFinite(number) ? number : null
@@ -100,35 +98,7 @@ const estimateTodayTokensFromTranscriptContent = (content, { todayKey, threadCre
   }
 }
 
-const readLocalTodayTokenEstimateForThread = async (thread, todayKey) => {
-  if (!thread?.id || !thread?.path || !todayKey) {
-    return null
-  }
-
-  try {
-    const content = await fsp.readFile(thread.path, 'utf8')
-    const estimate = estimateTodayTokensFromTranscriptContent(content, {
-      todayKey,
-      threadCreatedAtMs: getThreadCreatedAtMs(thread)
-    })
-
-    if (estimate.eventCount === 0) {
-      return null
-    }
-
-    return {
-      threadId: thread.id,
-      tokens: estimate.tokens,
-      eventCount: estimate.eventCount,
-      updatedAt: estimate.updatedAt
-    }
-  } catch {
-    return null
-  }
-}
-
 module.exports = {
   estimateTodayTokensFromTranscriptContent,
-  readLocalTodayTokenEstimateForThread,
   toLocalDateKey
 }

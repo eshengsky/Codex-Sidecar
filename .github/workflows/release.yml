@@ -123,6 +123,69 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           spctl --assess --type execute --verbose "$APP_PATH"
 
+      - name: Verify packaged DMG, ZIP, and first-launch data engine
+        if: github.ref_type == 'tag'
+        run: |
+          ZIP_PATH="$(find release -maxdepth 1 -type f -name 'Codex-Sidecar-mac-${{ matrix.arch }}.zip' | head -n 1)"
+          DMG_PATH="$(find release -maxdepth 1 -type f -name 'Codex-Sidecar-mac-${{ matrix.arch }}.dmg' | head -n 1)"
+
+          if [[ -z "$ZIP_PATH" || -z "$DMG_PATH" ]]; then
+            echo "Missing architecture-specific ZIP or DMG."
+            exit 1
+          fi
+
+          VERIFY_ROOT="$(mktemp -d "$RUNNER_TEMP/sidecar-release-XXXXXX")"
+          ZIP_EXTRACT_DIR="$VERIFY_ROOT/zip"
+          DMG_MOUNT_DIR="$VERIFY_ROOT/dmg"
+          SMOKE_APP_DATA_PATH="$VERIFY_ROOT/app-data"
+          mkdir -p "$ZIP_EXTRACT_DIR" "$DMG_MOUNT_DIR" "$SMOKE_APP_DATA_PATH"
+
+          cleanup() {
+            hdiutil detach "$DMG_MOUNT_DIR" >/dev/null 2>&1 || true
+            rm -rf "$VERIFY_ROOT"
+          }
+          trap cleanup EXIT
+
+          ditto -x -k "$ZIP_PATH" "$ZIP_EXTRACT_DIR"
+          ZIP_APP="$(find "$ZIP_EXTRACT_DIR" -maxdepth 3 -name 'Codex Sidecar.app' -type d | head -n 1)"
+
+          if [[ -z "$ZIP_APP" ]]; then
+            echo "ZIP does not contain Codex Sidecar.app."
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$ZIP_APP"
+          spctl --assess --type execute --verbose "$ZIP_APP"
+
+          SMOKE_OUTPUT="$(
+            SIDECAR_SMOKE_APP_DATA_PATH="$SMOKE_APP_DATA_PATH" \
+              "$ZIP_APP/Contents/MacOS/Codex Sidecar" \
+              --sidecar-engine-smoke
+          )"
+          echo "$SMOKE_OUTPUT"
+
+          if [[ "$SMOKE_OUTPUT" != *'"status":"ready"'* ]]; then
+            echo "Packaged data-engine smoke did not report ready."
+            exit 1
+          fi
+
+          if [[ ! -f "$SMOKE_APP_DATA_PATH/Codex Sidecar/sidecar-v2.sqlite" ]]; then
+            echo "Packaged data-engine smoke did not create sidecar-v2.sqlite."
+            exit 1
+          fi
+
+          hdiutil attach -nobrowse -readonly -mountpoint "$DMG_MOUNT_DIR" "$DMG_PATH"
+          DMG_APP="$(find "$DMG_MOUNT_DIR" -maxdepth 2 -name 'Codex Sidecar.app' -type d | head -n 1)"
+
+          if [[ -z "$DMG_APP" ]]; then
+            echo "Mounted DMG does not contain Codex Sidecar.app."
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$DMG_APP"
+          spctl --assess --type execute --verbose "$DMG_APP"
+          hdiutil detach "$DMG_MOUNT_DIR"
+
       - name: Show release files
         run: find release -maxdepth 2 -type f | sort
 

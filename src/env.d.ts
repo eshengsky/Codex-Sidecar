@@ -10,7 +10,7 @@ import type {
   PopupMenuResult,
   PopupMenuShowOptions,
   PromptTemplate,
-  CodexStore,
+  CodexProjection,
   SidecarData,
   SidecarHookStatus,
   SidecarSettings,
@@ -40,7 +40,7 @@ type PanelKey = 'threads' | 'bookmarks' | 'explorations' | 'prompts' | 'data'
 declare global {
   interface Window {
     sidecar: {
-      getCodexStore: (options?: unknown) => Promise<CodexStore>
+      getCodexProjection: () => Promise<CodexProjection>
       getSidecarData: () => Promise<SidecarData>
       getHookStatus: (options?: { refresh?: boolean }) => Promise<SidecarHookStatus>
       openCodexSettings: () => Promise<boolean>
@@ -58,6 +58,7 @@ declare global {
       importData: () => Promise<{ canceled: boolean, filePath?: string }>
       openThread: (threadId: string) => Promise<boolean>
       continueThreadWithSummary: (threadId: string, cwd: string, sourceUpdatedAt: number | null) => Promise<ThreadContinuationRunResult>
+      getContinuationResult: (threadId: string) => Promise<ThreadContinuationResult | null>
       setContinuationResultUnread: (threadId: string, unread: boolean) => Promise<ThreadContinuationResult | null>
       chooseExplorationImages: () => Promise<Array<{ path: string, name: string }>>
       createExplorationRun: (request: ExplorationCreateRequest) => Promise<ExplorationRun>
@@ -83,7 +84,7 @@ declare global {
       onWindowMode: (callback: (mode: WindowMode) => void) => () => void
       onSelectPanel: (callback: (panel: PanelKey) => void) => () => void
       onPopupMenuData: (callback: (data: PopupMenuData) => void) => () => void
-      onCodexStore: (callback: (codexStore: CodexStore) => void) => () => void
+      onCodexProjection: (callback: (projection: CodexProjection) => void) => () => void
       onSidecarDataChanged: (callback: (sidecarData: SidecarData) => void) => () => void
       onHookStatusChanged: (callback: (hookStatus: SidecarHookStatus) => void) => () => void
       onUpdateStateChanged: (callback: (state: SidecarUpdateState) => void) => () => void

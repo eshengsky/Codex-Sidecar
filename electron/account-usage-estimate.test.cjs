@@ -1,12 +1,8 @@
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const os = require('node:os')
-const path = require('node:path')
 const test = require('node:test')
 
 const {
-  estimateTodayTokensFromTranscriptContent,
-  readLocalTodayTokenEstimateForThread
+  estimateTodayTokensFromTranscriptContent
 } = require('./account-usage-estimate.cjs')
 
 const tokenCountLine = (timestamp, totalTokens) => JSON.stringify({
@@ -61,30 +57,4 @@ test('counts first today total for conversations created today', () => {
 
   assert.equal(result.tokens, 800)
   assert.equal(result.eventCount, 2)
-})
-
-test('reads local today estimate from a transcript file', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidecar-account-usage-estimate-'))
-  const transcriptPath = path.join(dir, 'rollout.jsonl')
-
-  fs.writeFileSync(
-    transcriptPath,
-    [
-      tokenCountLine('2026-07-09T09:00:00.000+08:00', 500),
-      tokenCountLine('2026-07-09T10:00:00.000+08:00', 650)
-    ].join('\n')
-  )
-
-  const result = await readLocalTodayTokenEstimateForThread({
-    id: 'thread-1',
-    path: transcriptPath,
-    createdAt: Date.parse('2026-07-09T08:30:00.000+08:00') / 1000
-  }, '2026-07-09')
-
-  assert.deepEqual(result, {
-    threadId: 'thread-1',
-    tokens: 650,
-    eventCount: 2,
-    updatedAt: Date.parse('2026-07-09T10:00:00.000+08:00')
-  })
 })

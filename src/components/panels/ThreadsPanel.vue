@@ -20,24 +20,28 @@
       </div>
     </div>
 
-    <div class="flex min-h-0 flex-col gap-2 overflow-y-auto overflow-x-hidden pr-2.5 -mr-2.5 pb-2">
-      <div v-if="loading && !hasCodexStore" class="flex flex-col gap-2">
-        <USkeleton v-for="index in 7" :key="index" class="h-[104px] rounded-lg" />
-      </div>
+    <div v-if="loading && !hasCodexStore" class="flex min-h-0 flex-col gap-2 overflow-y-auto overflow-x-hidden pr-2.5 -mr-2.5 pb-2">
+      <USkeleton v-for="index in 7" :key="index" class="h-[104px] rounded-lg" />
+    </div>
 
-      <UEmpty
-        v-else-if="filteredThreads.length === 0"
-        :title="t('threads.emptyTitle')"
-        :description="t('threads.emptyDescription')"
-        variant="naked"
-        size="xs"
-        class="min-h-[220px] self-center"
-      />
+    <UEmpty
+      v-else-if="filteredThreads.length === 0"
+      :title="t('threads.emptyTitle')"
+      :description="t('threads.emptyDescription')"
+      variant="naked"
+      size="xs"
+      class="min-h-[220px] self-center"
+    />
 
-      <template v-else>
+    <UScrollArea
+      v-else
+      ref="threadList"
+      :items="filteredThreads"
+      :virtualize="threadListVirtualize"
+      class="min-h-0 flex-1 pr-2.5 -mr-2.5"
+    >
+      <template #default="{ item: thread }">
         <ThreadRow
-          v-for="thread in filteredThreads"
-          :key="thread.id"
           :thread="thread"
           :selected="thread.id === selectedThreadId"
           :continuing="continuationThreadIdSet.has(thread.id)"
@@ -49,18 +53,23 @@
           @continue-thread="emit('continueThread', $event)"
         />
       </template>
-    </div>
+    </UScrollArea>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ThreadRow from '@/components/ThreadRow.vue'
 import type { ThreadSummary } from '@/types/sidecar'
 
 type StatusTileKey = 'completedUnread' | 'running' | 'waiting' | 'failed'
 type FilterKey = 'all' | StatusTileKey | 'contextRisk'
+type ThreadListRef = {
+  virtualizer?: {
+    scrollToIndex: (index: number, options?: { align?: 'auto' | 'start' | 'center' | 'end' }) => void
+  }
+}
 
 const props = defineProps<{
   threads: ThreadSummary[]
@@ -82,6 +91,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const searchTerm = ref('')
 const activeFilter = ref<FilterKey>('all')
+const threadListRef = useTemplateRef<ThreadListRef>('threadList')
 const continuationThreadIdSet = computed(() => new Set(props.continuationThreadIds))
 const continuationUnreadThreadIdSet = computed(() => new Set(props.continuationUnreadThreadIds))
 
@@ -132,5 +142,21 @@ const filteredThreads = computed(() => {
       thread.id
     ].some(value => String(value || '').toLowerCase().includes(term))
   })
+})
+
+const threadListVirtualize = {
+  // Rows with a user preview are taller, so keep Nuxt UI's DOM measurement enabled.
+  estimateSize: 84,
+  overscan: 8,
+  gap: 8,
+  paddingEnd: 8,
+  // Projection refreshes replace thread objects; IDs preserve each row's virtual measurement.
+  getItemKey: (index: number) => filteredThreads.value[index]?.id ?? index
+}
+
+// Reset only for user-controlled criteria; live projection updates must preserve scroll position.
+watch([searchTerm, activeFilter], async () => {
+  await nextTick()
+  threadListRef.value?.virtualizer?.scrollToIndex(0, { align: 'start' })
 })
 </script>

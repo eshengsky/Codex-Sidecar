@@ -494,7 +494,8 @@ import UsageStatsPanel from '@/components/panels/UsageStatsPanel.vue'
 import PopupMenu from '@/components/PopupMenu.vue'
 import UsageMeter from '@/components/UsageMeter.vue'
 import { applyI18nLanguageMode } from '@/i18n'
-import type { AppLocale, CodexStore, ExplorationCandidate, ExplorationRun, FavoriteItem, LanguageMode, PopupMenuData, PopupMenuShowOptions, PromptTemplate, SidecarData, SidecarHookStatus, ThemeMode, ThreadContinuationResult, ThreadSummary, ThreadTurnPreview, TurnBookmark, UsageDisplayMode } from '@/types/sidecar'
+import type { AppLocale, CodexProjection, CodexStore, ExplorationCandidate, ExplorationRun, FavoriteItem, LanguageMode, PopupMenuData, PopupMenuShowOptions, PromptTemplate, SidecarData, SidecarHookStatus, ThemeMode, ThreadContinuationResult, ThreadSummary, ThreadTurnPreview, TurnBookmark, UsageDisplayMode } from '@/types/sidecar'
+import { hasUsableCodexProjection, shouldApplyProjection } from '@/utils/codex-projection'
 import { formatNavigationMessageTime, formatResetDateTime } from '@/utils/format'
 
 type StatusTileKey = 'completedUnread' | 'running' | 'waiting' | 'failed'
@@ -557,11 +558,9 @@ const explorationResultTab = ref<ExplorationResultTabKey>('summary')
 const explorationResultLoading = ref(false)
 const explorationResultError = ref('')
 const navigationListRef = ref<HTMLElement | null>(null)
-let refreshTimer: number | undefined
 let hookStatusTimer: number | undefined
-let explorationResultTimer: number | undefined
 let feedbackTimer: number | undefined
-let unsubscribeCodexStore: (() => void) | undefined
+let unsubscribeCodexProjection: (() => void) | undefined
 let unsubscribeExplorationsChanged: (() => void) | undefined
 let unsubscribeSidecarDataChanged: (() => void) | undefined
 let unsubscribeHookStatusChanged: (() => void) | undefined
@@ -569,10 +568,12 @@ let unsubscribeWindowMode: (() => void) | undefined
 let unsubscribeSelectPanel: (() => void) | undefined
 let unsubscribePopupMenuData: (() => void) | undefined
 let systemThemeMediaQuery: MediaQueryList | undefined
-let codexStoreRequestId = 0
+let codexProjectionGeneration = 0
+let codexProjectionRevision = 0
 let hookStatusRequestId = 0
 let navigationRequestId = 0
 let explorationResultRequestId = 0
+let continuationConfirmRequestId = 0
 let bookmarkMutationVersion = 0
 const bookmarkMutationVersionByKey = new Map<string, number>()
 const { t, locale } = useI18n()
@@ -1197,29 +1198,27 @@ const handleWindowFocus = () => {
   }
 }
 
-const applyCodexStore = (nextCodexStore: CodexStore) => {
+const applyCodexStore = (nextCodexStore: CodexStore | null) => {
   codexStore.value = nextCodexStore
 }
 
-const refreshCodexStore = async () => {
-  const requestId = ++codexStoreRequestId
-  loading.value = true
-
-  try {
-    const nextCodexStore = await window.sidecar.getCodexStore()
-
-    if (requestId === codexStoreRequestId) {
-      applyCodexStore(nextCodexStore)
-    }
-  } catch (error) {
-    if (requestId === codexStoreRequestId) {
-      setFeedback(error instanceof Error ? error.message : String(error))
-    }
-  } finally {
-    if (requestId === codexStoreRequestId) {
-      loading.value = false
-    }
+const applyCodexProjection = (projection: CodexProjection) => {
+  if (!shouldApplyProjection({
+    currentGeneration: codexProjectionGeneration,
+    currentRevision: codexProjectionRevision,
+    nextGeneration: projection.generation,
+    nextRevision: projection.revision
+  })) {
+    return
   }
+
+  codexProjectionGeneration = projection.generation
+  codexProjectionRevision = projection.revision
+  applyCodexStore(projection.codexStore)
+  // A fresh v2 database intentionally becomes window-ready before its first
+  // app-server/index pass. Keep the existing loading shell until that pass
+  // publishes a usable store instead of flashing a misleading empty state.
+  loading.value = !hasUsableCodexProjection(projection.codexStore)
 }
 
 const setMode = async (nextMode: WindowMode, options?: { activePanel?: PanelKey }) => {
@@ -1385,6 +1384,14 @@ const applyExplorations = (nextExplorations: ExplorationRun[]) => {
   explorations.value = nextExplorations
 }
 
+const handleExplorationsChanged = (nextExplorations: ExplorationRun[]) => {
+  applyExplorations(nextExplorations)
+
+  if (mode.value === 'exploration-result' && initialExplorationId) {
+    void loadExplorationResult()
+  }
+}
+
 const handleExplorationCreated = (run: ExplorationRun) => {
   explorations.value = [run, ...explorations.value.filter(item => item.id !== run.id)]
   activePanel.value = 'explorations'
@@ -1490,14 +1497,39 @@ const openThread = async (thread: ThreadSummary) => {
   await openThreadById(thread.id)
 }
 
-const openContinuationConfirm = (thread: ThreadSummary) => {
+const openContinuationConfirm = async (thread: ThreadSummary) => {
   if (continuationThreadIds.value.includes(thread.id)) {
     return
   }
 
+  const requestId = ++continuationConfirmRequestId
+
   selectedThreadId.value = thread.id
   pendingContinuationThread.value = thread
-  const result = getCurrentContinuationResult(thread)
+  let result = getCurrentContinuationResult(thread)
+
+  if (result) {
+    try {
+      const fullResult = await window.sidecar.getContinuationResult(thread.id)
+
+      if (requestId !== continuationConfirmRequestId) {
+        return
+      }
+
+      if (fullResult?.sourceUpdatedAt === thread.updatedAt) {
+        result = fullResult
+        continuationResults.value = {
+          ...continuationResults.value,
+          [thread.id]: fullResult
+        }
+      }
+    } catch (error) {
+      if (requestId === continuationConfirmRequestId) {
+        setFeedback(error instanceof Error ? error.message : String(error))
+      }
+      return
+    }
+  }
 
   if (result?.unread) {
     continuationResults.value = {
@@ -1516,6 +1548,7 @@ const openContinuationConfirm = (thread: ThreadSummary) => {
 }
 
 const closeContinuationConfirm = () => {
+  continuationConfirmRequestId += 1
   continuationConfirmOpen.value = false
   pendingContinuationThread.value = null
 }
@@ -1683,7 +1716,6 @@ const importData = async () => {
     if (!result.canceled) {
       await loadSidecarData()
       await loadExplorations()
-      await refreshCodexStore()
       setFeedback(t('feedback.imported'))
     }
   } catch (error) {
@@ -1721,6 +1753,7 @@ onMounted(async () => {
   }
 
   unsubscribeSidecarDataChanged = window.sidecar.onSidecarDataChanged(applySidecarData)
+  unsubscribeExplorationsChanged = window.sidecar.onExplorationsChanged(handleExplorationsChanged)
 
   if (mode.value === 'popup-menu') {
     unsubscribePopupMenuData = window.sidecar.onPopupMenuData(applyPopupMenuData)
@@ -1746,7 +1779,6 @@ onMounted(async () => {
 
   if (mode.value === 'exploration-result') {
     await loadExplorationResult()
-    explorationResultTimer = window.setInterval(loadExplorationResult, 2500)
     return
   }
 
@@ -1759,14 +1791,19 @@ onMounted(async () => {
     setFeedback(error instanceof Error ? error.message : String(error))
   }
 
-  unsubscribeCodexStore = window.sidecar.onCodexStore(applyCodexStore)
-  unsubscribeExplorationsChanged = window.sidecar.onExplorationsChanged(applyExplorations)
-  await refreshCodexStore()
-  refreshTimer = window.setInterval(refreshCodexStore, 5000)
+  loading.value = true
+  unsubscribeCodexProjection = window.sidecar.onCodexProjection(applyCodexProjection)
+
+  try {
+    applyCodexProjection(await window.sidecar.getCodexProjection())
+  } catch (error) {
+    loading.value = false
+    setFeedback(error instanceof Error ? error.message : String(error))
+  }
 })
 
 onBeforeUnmount(() => {
-  unsubscribeCodexStore?.()
+  unsubscribeCodexProjection?.()
   unsubscribeExplorationsChanged?.()
   unsubscribeSidecarDataChanged?.()
   unsubscribeHookStatusChanged?.()
@@ -1776,15 +1813,7 @@ onBeforeUnmount(() => {
   systemThemeMediaQuery?.removeEventListener('change', handleSystemThemeChange)
   window.removeEventListener('focus', handleWindowFocus)
 
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer)
-  }
-
   stopHookStatusPolling()
-
-  if (explorationResultTimer) {
-    window.clearInterval(explorationResultTimer)
-  }
 
   if (feedbackTimer) {
     window.clearTimeout(feedbackTimer)

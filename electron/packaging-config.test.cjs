@@ -102,6 +102,19 @@ test('release workflow builds signed mac dmg and update feed artifacts per archi
   assert.match(releaseWorkflow, /Missing APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, or APPLE_TEAM_ID/)
   assert.match(releaseWorkflow, /find release -maxdepth 3 -name 'Codex Sidecar\.app' -type d/)
   assert.match(releaseWorkflow, /codesign --verify --deep --strict --verbose=2/)
+  assert.match(releaseWorkflow, /spctl --assess --type execute --verbose/)
+  assert.match(releaseWorkflow, /ditto -x -k "\$ZIP_PATH" "\$ZIP_EXTRACT_DIR"/)
+  assert.match(releaseWorkflow, /hdiutil attach -nobrowse -readonly/)
+  assert.match(releaseWorkflow, /hdiutil detach/)
+  assert.match(releaseWorkflow, /--sidecar-engine-smoke/)
+  assert.match(releaseWorkflow, /SIDECAR_SMOKE_APP_DATA_PATH/)
+  assert.match(releaseWorkflow, /sidecar-v2\.sqlite/)
+  assert.match(mainProcessSource, /--sidecar-engine-smoke/)
+  assert.match(mainProcessSource, /SIDECAR_ENGINE_SMOKE/)
+  assert.match(
+    mainProcessSource,
+    /isDataEngineSmokeMode[\s\S]*dataEngine\.request\('projection\.refresh', null, \{[\s\S]*timeoutMs:\s*120_000/
+  )
   assert.match(releaseWorkflow, /gh release upload "\$GITHUB_REF_NAME" "\$\{artifacts\[@\]\}" --clobber/)
   assert.match(releaseWorkflow, /find release -maxdepth 1 -type f -name '\*\.dmg'/)
   assert.match(releaseWorkflow, /find release -maxdepth 1 -type f -name '\*\.zip'/)

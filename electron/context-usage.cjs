@@ -1,5 +1,3 @@
-const fsp = require('node:fs/promises')
-
 const toFiniteNumber = value => {
   const number = Number(value)
   return Number.isFinite(number) ? number : null
@@ -57,39 +55,7 @@ const contextUsageFromTranscriptTokenCount = (threadId, event) => {
   )
 }
 
-const readLatestTranscriptContextUsage = async (transcriptPath, threadId) => {
-  if (!transcriptPath || !threadId) {
-    return null
-  }
-
-  try {
-    const contents = await fsp.readFile(transcriptPath, 'utf8')
-    let latestUsage = null
-
-    for (const line of contents.split('\n')) {
-      if (!line.trim()) {
-        continue
-      }
-
-      try {
-        const usage = contextUsageFromTranscriptTokenCount(threadId, JSON.parse(line))
-
-        if (usage) {
-          latestUsage = usage
-        }
-      } catch {
-        // A malformed transcript line should not block context usage reconciliation.
-      }
-    }
-
-    return latestUsage
-  } catch {
-    return null
-  }
-}
-
 module.exports = {
   contextUsageFromAppServerTokenUsage,
-  contextUsageFromTranscriptTokenCount,
-  readLatestTranscriptContextUsage
+  contextUsageFromTranscriptTokenCount
 }

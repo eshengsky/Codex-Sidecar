@@ -1,34 +1,34 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, powerMonitor, screen, shell } = require('electron')
-const { spawn, spawnSync } = require('node:child_process')
+const {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  MessageChannelMain,
+  nativeTheme,
+  powerMonitor,
+  screen,
+  shell,
+  utilityProcess
+} = require('electron')
 const crypto = require('node:crypto')
-const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
-const readline = require('node:readline')
 const {
   configureAppDataPaths
 } = require('./app-data-paths.cjs')
 const {
-  SIDECAR_STORE_SCHEMA_VERSION,
-  createSidecarStore
-} = require('./sidecar-store.cjs')
-const {
-  contextUsageFromAppServerTokenUsage,
-  readLatestTranscriptContextUsage
-} = require('./context-usage.cjs')
-const {
   SIDECAR_HOOK_EVENTS,
   evaluateSidecarHookStatus
 } = require('./sidecar-hooks.cjs')
+const { createDiagnostics } = require('./diagnostics.cjs')
 const {
-  normalizeAccountUsageResponse
-} = require('./account-usage.cjs')
-const {
-  readLocalTodayTokenEstimateForThread,
-  toLocalDateKey
-} = require('./account-usage-estimate.cjs')
+  createCodexClientProxy,
+  createDataEngineStoreClient
+} = require('./data-engine/main-adapter.cjs')
+const { createDataEngineSupervisor } = require('./data-engine/supervisor.cjs')
 const {
   getUpdateState,
   initializeAutoUpdate,
@@ -38,18 +38,29 @@ const {
 } = require('./auto-update.cjs')
 const { version: APP_VERSION } = require('../package.json')
 
+const isDataEngineSmokeMode = process.argv.includes('--sidecar-engine-smoke')
+
+if (isDataEngineSmokeMode) {
+  const smokeAppDataPath = process.env.SIDECAR_SMOKE_APP_DATA_PATH
+
+  if (!smokeAppDataPath || !path.isAbsolute(smokeAppDataPath)) {
+    throw new Error('SIDECAR_SMOKE_APP_DATA_PATH must be an absolute path in data-engine smoke mode.')
+  }
+
+  fs.mkdirSync(smokeAppDataPath, {
+    recursive: true
+  })
+  app.setPath('appData', smokeAppDataPath)
+}
+
 configureAppDataPaths({ app, fs })
 
 const APP_REPOSITORY_URL = 'https://github.com/eshengsky/Codex-Sidecar'
-const SIDECAR_RUNTIME_SCHEMA_VERSION = 1
+const diagnostics = createDiagnostics({
+  directory: path.join(app.getPath('userData'), 'diagnostics')
+})
 const WINDOW_STATE_SCHEMA_VERSION = 2
-const CODEX_STORE_DEBOUNCE_MS = 700
-const CONTEXT_USAGE_TRANSCRIPT_REFRESH_GRACE_MS = 5000
 const POST_OPEN_CODEX_STORE_DELAYS_MS = [300, 1000, 2500]
-const HOOK_EVENT_PROCESS_DEBOUNCE_MS = 120
-const NATIVE_UNREAD_REFRESH_DELAY_MS = 250
-const RATE_LIMITS_BACKGROUND_REFRESH_INTERVAL_MS = 15_000
-const ACCOUNT_USAGE_BACKGROUND_REFRESH_INTERVAL_MS = 60_000
 const THREAD_CONTINUATION_SUMMARY_TIMEOUT_MS = 6 * 60 * 60_000
 const THREAD_CONTINUATION_TEXT_GRACE_MS = 3000
 const EXPLORATION_TURN_TIMEOUT_MS = 10 * 60_000
@@ -62,13 +73,6 @@ const TURN_BOOKMARK_META_MAX_LENGTH = 1000
 const WINDOW_BOUNDS_SAVE_DEBOUNCE_MS = 300
 const WINDOW_BOUNDS_APPLY_SUPPRESSION_MS = 50
 const WINDOW_POSITION_VISIBLE_SIZE = 24
-const PROJECTLESS_THREAD_LABEL = '普通对话'
-const DEFAULT_CODEX_CONVERSATION_ROOT = path.join(os.homedir(), 'Documents', 'Codex')
-const IMAGE_MESSAGE_PREVIEW = '图片消息'
-const IMAGE_REFERENCE_PATTERN = /\.(?:png|jpe?g|gif|webp|heic|heif|tiff?|bmp|svg)(?::|\s|$|[?#])/i
-const MARKDOWN_HEADING_PATTERN = /^#{1,6}\s+\S/
-const HEARTBEAT_MESSAGE_PATTERN = /^<heartbeat(?:\s|>)[\s\S]*<\/heartbeat>\s*$/i
-const HEARTBEAT_INSTRUCTIONS_PATTERN = /<instructions(?:\s[^>]*)?>([\s\S]*?)<\/instructions>/i
 const MINI_SIZE = { width: 330, height: 36 }
 const MINI_ALWAYS_ON_TOP_LEVEL_BELOW_DOCK = 'floating'
 const MINI_ALWAYS_ON_TOP_LEVEL_OVER_DOCK = 'pop-up-menu'
@@ -88,26 +92,12 @@ const FULL_MIN_SIZE = { width: 340, height: 420 }
 let mainWindow = null
 let miniWindow = null
 let popupMenuWindow = null
-const appStartedAt = Date.now()
 const explorationResultWindows = new Map()
+let dataEngine = null
+let dataEngineStore = null
 let codexClient = null
-let codexStoreTimer = null
-let globalStateFileWatcher = null
-let globalStateDirWatcher = null
-let nativeUnreadRefreshTimer = null
-let hookEventsWatcher = null
-let hookEventTimer = null
 let popupMenuPrewarmTimer = null
-let hookEventProcessingPromise = null
-let cachedNativeUnread = null
-let cachedRateLimits = null
-let cachedRateLimitsUpdatedAt = 0
-let rateLimitsRefreshPromise = null
-let cachedAccountUsage = null
-let cachedAccountUsageUpdatedAt = 0
-let accountUsageRefreshPromise = null
 let windowStateWriteQueue = Promise.resolve()
-let sidecarStore = null
 let windowState = null
 let currentWindowMode = 'full'
 let currentMiniOverDock = true
@@ -119,7 +109,19 @@ let windowBoundsSaveTimer = null
 let isApplyingWindowBounds = false
 let applyingWindowBoundsTimer = null
 let miniWindowDragState = null
-const latestTurnSignalCache = new Map()
+const dataEngineSubscriberCleanupByWebContentsId = new Map()
+
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+  diagnostics.record('main.uncaughtException', {
+    error,
+    origin
+  })
+})
+process.on('unhandledRejection', reason => {
+  diagnostics.record('main.unhandledRejection', {
+    reason
+  })
+})
 
 let sidecarHookStatus = {
   ready: false,
@@ -131,9 +133,6 @@ let sidecarHookStatus = {
   error: null
 }
 
-const RUNTIME_STATUS_VALUES = new Set(['idle', 'running', 'waiting', 'failed'])
-const RUNTIME_CORRECTION_STATUSES = new Set(['running', 'waiting', 'failed'])
-const AGENT_OUTPUT_ITEM_TYPES = new Set(['agentMessage'])
 const LANGUAGE_MODES = new Set(['auto', 'en', 'zh'])
 const THEME_MODES = new Set(['auto', 'light', 'dark'])
 const FULL_PANEL_KEYS = new Set(['threads', 'bookmarks', 'explorations', 'prompts', 'usage', 'data'])
@@ -248,16 +247,6 @@ const normalizePromptTemplates = rawTemplates => {
 
 const createDefaultPromptTemplates = () => []
 
-const createDefaultSidecarData = () => ({
-  schemaVersion: SIDECAR_STORE_SCHEMA_VERSION,
-  promptTemplates: createDefaultPromptTemplates(),
-  favorites: [],
-  contextUsageByThread: {},
-  threadLinks: [],
-  continuationResults: {},
-  settings: createDefaultSidecarSettings()
-})
-
 const createDefaultWindowState = () => ({
   schemaVersion: WINDOW_STATE_SCHEMA_VERSION,
   positionsByMode: {},
@@ -271,8 +260,6 @@ const normalizeFavoriteString = (value, maxLength = TURN_BOOKMARK_META_MAX_LENGT
 }
 
 const normalizeFavoriteTimestamp = value => typeof value === 'number' && Number.isFinite(value) ? value : null
-
-const favoriteItemKey = item => `${item.type}:${item.id}`
 
 const normalizeThreadFavoriteItem = raw => {
   if (!raw || typeof raw !== 'object') {
@@ -381,50 +368,6 @@ const normalizeFavoriteItem = raw => {
   return null
 }
 
-const normalizeFavoriteItems = rawItems => {
-  if (!Array.isArray(rawItems)) {
-    return []
-  }
-
-  const seen = new Set()
-  const items = []
-
-  for (const rawItem of rawItems) {
-    const item = normalizeFavoriteItem(rawItem)
-
-    if (!item || seen.has(favoriteItemKey(item))) {
-      continue
-    }
-
-    seen.add(favoriteItemKey(item))
-    items.push(item)
-  }
-
-  return items.sort((a, b) => b.createdAt - a.createdAt)
-}
-
-const normalizeSidecarData = raw => {
-  const fallback = createDefaultSidecarData()
-
-  if (!raw || typeof raw !== 'object') {
-    return fallback
-  }
-
-  const hasPromptTemplates = Array.isArray(raw.promptTemplates)
-
-  return {
-    schemaVersion: SIDECAR_STORE_SCHEMA_VERSION,
-    promptTemplates: hasPromptTemplates
-      ? normalizePromptTemplates(raw.promptTemplates)
-      : fallback.promptTemplates,
-    favorites: normalizeFavoriteItems(Array.isArray(raw.favorites) ? raw.favorites : []),
-    contextUsageByThread: raw.contextUsageByThread && typeof raw.contextUsageByThread === 'object' ? raw.contextUsageByThread : {},
-    threadLinks: Array.isArray(raw.threadLinks) ? raw.threadLinks : [],
-    continuationResults: raw.continuationResults && typeof raw.continuationResults === 'object' ? raw.continuationResults : fallback.continuationResults,
-    settings: normalizeSidecarSettings(raw.settings)
-  }
-}
-
 const normalizeWindowPosition = raw => {
   if (!raw || typeof raw !== 'object') {
     return null
@@ -501,20 +444,86 @@ const normalizeWindowState = raw => {
 }
 
 const getSidecarStorePath = () => path.join(app.getPath('userData'), 'sidecar.sqlite')
+const getSidecarEngineStorePath = () => path.join(app.getPath('userData'), 'sidecar-v2.sqlite')
+const getSidecarStoreBackupPath = () => path.join(app.getPath('userData'), 'sidecar-v1.backup.sqlite')
 
 const getExplorationAttachmentsDir = runId => path.join(app.getPath('userData'), 'exploration-attachments', runId)
 
 const getSidecarStore = () => {
-  if (!sidecarStore) {
-    sidecarStore = createSidecarStore(getSidecarStorePath())
+  if (!dataEngineStore) {
+    throw new Error('Sidecar data engine is not ready.')
   }
 
-  return sidecarStore
+  return dataEngineStore
 }
 
-const readJsonFile = async filePath => {
-  const contents = await fsp.readFile(filePath, 'utf8')
-  return JSON.parse(contents)
+const initializeDataEngine = async () => {
+  if (dataEngine) {
+    return dataEngine.start()
+  }
+
+  dataEngine = createDataEngineSupervisor({
+    forkUtility: utilityProcess.fork,
+    entryPath: path.join(__dirname, 'data-engine', 'service.cjs'),
+    env: {
+      ...process.env,
+      SIDECAR_APP_VERSION: APP_VERSION,
+      SIDECAR_USER_DATA_PATH: app.getPath('userData'),
+      SIDECAR_SOURCE_DB_PATH: getSidecarStorePath(),
+      SIDECAR_ENGINE_DB_PATH: getSidecarEngineStorePath(),
+      SIDECAR_BACKUP_DB_PATH: getSidecarStoreBackupPath(),
+      SIDECAR_HOOK_EVENTS_DIR: getHookEventsDir(),
+      SIDECAR_RUNTIME_STATE_PATH: getRuntimeStatePath(),
+      SIDECAR_GLOBAL_STATE_PATH: getCodexGlobalStatePath(),
+      SIDECAR_ENGINE_SMOKE: isDataEngineSmokeMode ? '1' : '0'
+    }
+  })
+  dataEngine.events.on('health', health => {
+    diagnostics.record('dataEngine.health', health)
+  })
+  dataEngine.events.on('subscriberError', error => {
+    diagnostics.record('dataEngine.subscriberError', error)
+  })
+  dataEngineStore = createDataEngineStoreClient(dataEngine)
+  codexClient = createCodexClientProxy(dataEngine)
+
+  return dataEngine.start()
+}
+
+const attachDataEngineToWindow = browserWindow => {
+  if (!dataEngine || !browserWindow || browserWindow.isDestroyed()) {
+    return
+  }
+
+  const webContentsId = browserWindow.webContents.id
+  dataEngineSubscriberCleanupByWebContentsId.get(webContentsId)?.()
+
+  const unregister = dataEngine.registerSubscriber({
+    id: `webContents:${webContentsId}`,
+    topics: ['codexProjection'],
+    attach: ({ child, generation, topics }) => {
+      if (browserWindow.isDestroyed() || browserWindow.webContents.isDestroyed()) {
+        return
+      }
+
+      const { port1, port2 } = new MessageChannelMain()
+
+      child.postMessage({
+        type: 'subscribe',
+        generation,
+        topics
+      }, [port1])
+      browserWindow.webContents.postMessage('sidecar:dataPort', {
+        generation
+      }, [port2])
+    }
+  })
+
+  dataEngineSubscriberCleanupByWebContentsId.set(webContentsId, unregister)
+  browserWindow.webContents.once('destroyed', () => {
+    unregister()
+    dataEngineSubscriberCleanupByWebContentsId.delete(webContentsId)
+  })
 }
 
 const writeJsonAtomic = async (filePath, value) => {
@@ -535,7 +544,7 @@ const getRuntimeStatePath = () => path.join(app.getPath('userData'), 'runtime-st
 
 const readWindowState = async () => {
   try {
-    return normalizeWindowState(getSidecarStore().getWindowState())
+    return normalizeWindowState(await getSidecarStore().getWindowState())
   } catch (error) {
     return createDefaultWindowState()
   }
@@ -553,67 +562,7 @@ const saveWindowState = state => {
   return operation
 }
 
-const createDefaultRuntimeState = () => ({
-  schemaVersion: SIDECAR_RUNTIME_SCHEMA_VERSION,
-  threads: {}
-})
-
-const normalizeRuntimeState = raw => {
-  const fallback = createDefaultRuntimeState()
-
-  if (!raw || typeof raw !== 'object') {
-    return fallback
-  }
-
-  const threads = {}
-  const rawThreads = raw.threads && typeof raw.threads === 'object' ? raw.threads : {}
-
-  for (const [key, entry] of Object.entries(rawThreads)) {
-    if (!entry || typeof entry !== 'object' || !RUNTIME_STATUS_VALUES.has(entry.status)) {
-      continue
-    }
-
-    threads[key] = {
-      status: entry.status,
-      updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
-      eventName: typeof entry.eventName === 'string' ? entry.eventName : null,
-      sessionId: typeof entry.sessionId === 'string' ? entry.sessionId : null,
-      turnId: typeof entry.turnId === 'string' ? entry.turnId : null,
-      transcriptPath: typeof entry.transcriptPath === 'string' ? entry.transcriptPath : null,
-      cwd: typeof entry.cwd === 'string' ? entry.cwd : null,
-      failureReason: typeof entry.failureReason === 'string' ? entry.failureReason : null
-    }
-  }
-
-  return {
-    schemaVersion: SIDECAR_RUNTIME_SCHEMA_VERSION,
-    threads
-  }
-}
-
-const readRuntimeState = async () => {
-  try {
-    return normalizeRuntimeState(await readJsonFile(getRuntimeStatePath()))
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return createDefaultRuntimeState()
-    }
-
-    return createDefaultRuntimeState()
-  }
-}
-
-const saveRuntimeState = async state => {
-  const normalized = normalizeRuntimeState(state)
-  await writeJsonAtomic(getRuntimeStatePath(), normalized)
-  return normalized
-}
-
 const readSidecarData = async () => getSidecarStore().getSidecarData()
-
-const saveSidecarData = async data => {
-  return getSidecarStore().replaceSidecarData(normalizeSidecarData(data))
-}
 
 const normalizeExplorationString = (value, maxLength = 20000) => normalizePromptString(value).slice(0, maxLength)
 
@@ -728,20 +677,20 @@ const normalizeExplorationRun = raw => {
 }
 
 const updateExplorationRun = async (runId, updater) => {
-  const currentRun = getSidecarStore().getExplorationRun(runId)
+  const currentRun = await getSidecarStore().getExplorationRun(runId)
 
   if (!currentRun) {
     return null
   }
 
-  const nextRun = getSidecarStore().saveExplorationRun(normalizeExplorationRun({
+  const nextRun = await getSidecarStore().saveExplorationRun(normalizeExplorationRun({
     ...currentRun,
     ...(updater(currentRun) || {}),
     id: currentRun.id,
     updatedAt: Date.now()
   }) || currentRun)
 
-  sendExplorationsChanged()
+  await sendExplorationsChanged()
   return nextRun
 }
 
@@ -890,1620 +839,13 @@ const ensureSidecarHookIntegration = async () => {
   await installSidecarHooks()
 }
 
-const readNativeUnreadState = () => {
-  const statePath = getCodexGlobalStatePath()
-
-  try {
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
-    const unreadIds = state?.['electron-persisted-atom-state']?.['unread-thread-ids-by-host-v1']?.local
-
-    if (!Array.isArray(unreadIds)) {
-      return {
-        available: false,
-        path: statePath,
-        count: 0,
-        ids: [],
-        error: 'missing unread-thread-ids-by-host-v1.local'
-      }
-    }
-
-    return {
-      available: true,
-      path: statePath,
-      count: unreadIds.length,
-      ids: unreadIds.filter(value => typeof value === 'string'),
-      error: null
-    }
-  } catch (error) {
-    return {
-      available: false,
-      path: statePath,
-      count: 0,
-      ids: [],
-      error: error instanceof Error ? error.message : String(error)
-    }
-  }
-}
-
-const getNativeUnreadState = () => {
-  cachedNativeUnread = readNativeUnreadState()
-  return cachedNativeUnread
-}
-
-const closeNativeUnreadWatchers = () => {
-  if (globalStateFileWatcher) {
-    globalStateFileWatcher.close()
-    globalStateFileWatcher = null
-  }
-
-  if (globalStateDirWatcher) {
-    globalStateDirWatcher.close()
-    globalStateDirWatcher = null
-  }
-}
-
-const watchNativeUnreadFile = () => {
-  if (globalStateFileWatcher) {
-    globalStateFileWatcher.close()
-    globalStateFileWatcher = null
-  }
-
-  const statePath = getCodexGlobalStatePath()
-
-  if (!fs.existsSync(statePath)) {
-    return
-  }
-
-  // This is intentionally read-only. Codex owns the unread state and may change
-  // the persisted atom format between desktop releases.
-  globalStateFileWatcher = fs.watch(statePath, { persistent: false }, () => {
-    scheduleNativeUnreadRefresh()
-  })
-}
-
-const scheduleNativeUnreadRefresh = () => {
-  if (nativeUnreadRefreshTimer) {
-    clearTimeout(nativeUnreadRefreshTimer)
-  }
-
-  nativeUnreadRefreshTimer = setTimeout(() => {
-    nativeUnreadRefreshTimer = null
-    cachedNativeUnread = readNativeUnreadState()
-    watchNativeUnreadFile()
-    scheduleCodexStoreBroadcast()
-  }, NATIVE_UNREAD_REFRESH_DELAY_MS)
-}
-
-const watchNativeUnreadState = () => {
-  closeNativeUnreadWatchers()
-
-  const statePath = getCodexGlobalStatePath()
-  const stateDir = path.dirname(statePath)
-  const stateFileName = path.basename(statePath)
-
-  cachedNativeUnread = readNativeUnreadState()
-  watchNativeUnreadFile()
-
-  try {
-    globalStateDirWatcher = fs.watch(stateDir, { persistent: false }, (_eventType, fileName) => {
-      if (!fileName || fileName.toString() === stateFileName) {
-        scheduleNativeUnreadRefresh()
-      }
-    })
-  } catch {
-    // Directory watching is a latency optimization; renderer polling remains the fallback.
-  }
-}
-
-const resolveCodexExecutable = () => {
-  if (process.env.CODEX_CLI_PATH) {
-    return process.env.CODEX_CLI_PATH
-  }
-
-  const macBundleCandidates = [
-    '/Applications/Codex.app/Contents/Resources/codex',
-    path.join(os.homedir(), 'Applications', 'Codex.app', 'Contents', 'Resources', 'codex')
-  ]
-
-  for (const candidate of macBundleCandidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate
-    }
-  }
-
-  if (process.platform === 'darwin') {
-    const mdfindResult = spawnSync('mdfind', ['kMDItemCFBundleIdentifier == "com.openai.codex"'], { encoding: 'utf8' })
-    const appPaths = mdfindResult.status === 0 ? mdfindResult.stdout.split('\n').filter(Boolean) : []
-
-    for (const appPath of appPaths) {
-      const candidate = path.join(appPath, 'Contents', 'Resources', 'codex')
-
-      if (fs.existsSync(candidate)) {
-        return candidate
-      }
-    }
-  }
-
-  const whichResult = spawnSync('which', ['codex'], { encoding: 'utf8' })
-  const detected = whichResult.status === 0 ? whichResult.stdout.trim() : ''
-
-  return detected || 'codex'
-}
-
-const createCodexRpcClient = onNotification => {
-  const events = new EventEmitter()
-  const pending = new Map()
-  let proc = null
-  let nextId = 1
-  let connected = false
-  let connectPromise = null
-  let lastError = null
-  let stderrTail = ''
-
-  const sendMessage = message => {
-    if (!proc || !proc.stdin.writable) {
-      throw new Error('Codex app-server is not connected.')
-    }
-
-    proc.stdin.write(`${JSON.stringify(message)}\n`)
-  }
-
-  const settlePending = error => {
-    for (const entry of pending.values()) {
-      clearTimeout(entry.timer)
-      entry.reject(error)
-    }
-
-    pending.clear()
-  }
-
-  const respondToServerRequest = message => {
-    sendMessage({
-      id: message.id,
-      error: {
-        code: -32601,
-        message: 'Codex Sidecar is a read-only observer and does not handle server-initiated action requests.'
-      }
-    })
-  }
-
-  const handleMessage = message => {
-    if (Object.prototype.hasOwnProperty.call(message, 'id') && pending.has(message.id)) {
-      const entry = pending.get(message.id)
-      pending.delete(message.id)
-      clearTimeout(entry.timer)
-
-      if (message.error) {
-        entry.reject(new Error(message.error.message || 'Codex app-server request failed.'))
-        return
-      }
-
-      entry.resolve(message.result)
-      return
-    }
-
-    if (message.method && Object.prototype.hasOwnProperty.call(message, 'id')) {
-      respondToServerRequest(message)
-      return
-    }
-
-    if (message.method) {
-      onNotification(message)
-      events.emit('notification', message)
-    }
-  }
-
-  const request = (method, params, timeoutMs = 12000) => new Promise((resolve, reject) => {
-    const id = nextId
-    nextId += 1
-
-    const timer = setTimeout(() => {
-      pending.delete(id)
-      reject(new Error(`Timed out waiting for app-server response to ${method}.`))
-    }, timeoutMs)
-
-    pending.set(id, { resolve, reject, timer })
-
-    try {
-      sendMessage({ method, id, params })
-    } catch (error) {
-      clearTimeout(timer)
-      pending.delete(id)
-      reject(error)
-    }
-  })
-
-  const connectOnce = () => new Promise((resolve, reject) => {
-    const codexPath = resolveCodexExecutable()
-    const child = spawn(codexPath, ['app-server', '--stdio'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env }
-    })
-
-    proc = child
-    connected = false
-    stderrTail = ''
-
-    const rl = readline.createInterface({ input: child.stdout })
-
-    rl.on('line', line => {
-      if (!line.trim()) {
-        return
-      }
-
-      try {
-        handleMessage(JSON.parse(line))
-      } catch (error) {
-        lastError = error
-      }
-    })
-
-    child.stderr.on('data', chunk => {
-      stderrTail = `${stderrTail}${chunk.toString('utf8')}`.slice(-4000)
-    })
-
-    child.on('error', error => {
-      lastError = error
-      if (proc === child) {
-        connected = false
-        proc = null
-        settlePending(error)
-      }
-      reject(error)
-    })
-
-    child.on('exit', code => {
-      const error = new Error(`codex app-server exited with code ${code}. ${stderrTail}`.trim())
-      rl.close()
-
-      if (proc === child) {
-        connected = false
-        proc = null
-        settlePending(error)
-        events.emit('close', error)
-      }
-    })
-
-    request('initialize', {
-      clientInfo: {
-        name: 'codex_sidecar',
-        title: 'Codex Sidecar',
-        version: APP_VERSION
-      },
-      capabilities: {
-        experimentalApi: true
-      }
-    }, 8000)
-      .then(result => {
-        if (proc !== child) {
-          reject(new Error('Codex app-server connection was replaced before initialization completed.'))
-          return
-        }
-
-        sendMessage({ method: 'initialized', params: {} })
-        connected = true
-        resolve(result)
-      })
-      .catch(error => {
-        lastError = error
-        if (proc === child) {
-          child.kill()
-        }
-        reject(error)
-      })
-  })
-
-  const connect = async () => {
-    if (connected) {
-      return
-    }
-
-    // The ready-to-show CodexStore and renderer's initial refresh can arrive at
-    // the same time; gate connection startup so they share one app-server.
-    if (!connectPromise) {
-      connectPromise = connectOnce().finally(() => {
-        connectPromise = null
-      })
-    }
-
-    await connectPromise
-  }
-
-  const dispose = () => {
-    const currentProc = proc
-
-    connected = false
-    connectPromise = null
-    settlePending(new Error('Codex app-server connection closed.'))
-
-    if (currentProc) {
-      proc = null
-      currentProc.kill()
-    }
-  }
-
-  return {
-    connect,
-    request,
-    dispose,
-    events,
-    getStatus: () => ({
-      connected,
-      lastError: lastError instanceof Error ? lastError.message : lastError ? String(lastError) : null
-    })
-  }
-}
-
 const getCodexClient = async () => {
   if (!codexClient) {
-    codexClient = createCodexRpcClient(message => {
-      if ([
-        'thread/started',
-        'thread/status/changed',
-        'thread/name/updated',
-        'thread/archived',
-        'thread/deleted',
-        'thread/unarchived',
-        'turn/started',
-        'turn/completed',
-        'thread/tokenUsage/updated',
-        'account/rateLimits/updated'
-      ].includes(message.method)) {
-        void handleCodexNotification(message)
-      }
-    })
-
-    codexClient.events.on('close', () => {
-      scheduleCodexStoreBroadcast()
-    })
+    await initializeDataEngine()
   }
 
   await codexClient.connect()
   return codexClient
-}
-
-const persistContextUsage = usage => {
-  if (!usage?.threadId) {
-    return null
-  }
-
-  return getSidecarStore().setContextUsage(usage.threadId, usage)
-}
-
-const handleCodexNotification = async message => {
-  if (message.method === 'thread/tokenUsage/updated') {
-    const threadId = message.params?.threadId
-    const usage = message.params?.tokenUsage
-    const contextUsage = contextUsageFromAppServerTokenUsage(threadId, usage)
-
-    if (contextUsage) {
-      persistContextUsage(contextUsage)
-    }
-
-    if (codexClient) {
-      refreshAccountUsageInBackground(codexClient, { force: true })
-    }
-  }
-
-  if (message.method === 'account/rateLimits/updated' && codexClient) {
-    refreshRateLimitsInBackground(codexClient, { force: true })
-    return
-  }
-
-  scheduleCodexStoreBroadcast()
-}
-
-const listAllThreads = async client => {
-  const data = []
-  let cursor = null
-
-  do {
-    const response = await client.request('thread/list', {
-      cursor,
-      limit: 100,
-      sortKey: 'updated_at',
-      sortDirection: 'desc',
-      archived: false
-    })
-
-    data.push(...(Array.isArray(response?.data) ? response.data : []))
-    cursor = response?.nextCursor || null
-  } while (cursor)
-
-  return data
-}
-
-const hasAgentOutputItem = turn => {
-  const items = Array.isArray(turn?.items) ? turn.items : []
-
-  return items.some(item => AGENT_OUTPUT_ITEM_TYPES.has(item?.type))
-}
-
-const hasUserMessageItem = turn => {
-  const items = Array.isArray(turn?.items) ? turn.items : []
-
-  return items.some(item => item?.type === 'userMessage')
-}
-
-const normalizeMessageWhitespace = value => String(value || '').replace(/\s+/g, ' ').trim()
-
-const isHeartbeatMessageText = text => HEARTBEAT_MESSAGE_PATTERN.test(String(text || '').trim())
-
-const extractHeartbeatInstructionsText = text => {
-  const value = String(text || '').trim()
-
-  if (!isHeartbeatMessageText(value)) {
-    return null
-  }
-
-  return (value.match(HEARTBEAT_INSTRUCTIONS_PATTERN)?.[1] || '').trim()
-}
-
-const getAttachmentReferenceTerms = value => {
-  const raw = String(value || '').trim()
-
-  if (!raw) {
-    return []
-  }
-
-  const withoutQuery = raw.split(/[?#]/, 1)[0]
-  const baseName = path.basename(withoutQuery)
-
-  return [...new Set([raw, withoutQuery, baseName].filter(term => term.length > 3))]
-}
-
-const isImageReferenceLine = line => {
-  const value = String(line || '').trim()
-
-  if (!value || !IMAGE_REFERENCE_PATTERN.test(value)) {
-    return false
-  }
-
-  return /:\s*(?:\/|\\|https?:)/i.test(value) || /(?:codex-clipboard|clipboard|\/var\/folders|\/tmp\/)/i.test(value)
-}
-
-const isAttachmentReferenceLine = (line, attachmentTerms) => {
-  const value = String(line || '').trim()
-
-  if (!value) {
-    return false
-  }
-
-  return attachmentTerms.some(term => {
-    if (!value.includes(term)) {
-      return false
-    }
-
-    return term.includes('/') || term.includes('\\') || term.startsWith('http') || isImageReferenceLine(value)
-  }) || isImageReferenceLine(value)
-}
-
-const stripLeadingAttachmentSectionLabels = lines => {
-  let start = 0
-
-  while (start < lines.length) {
-    const line = lines[start].trim()
-
-    if (!line || MARKDOWN_HEADING_PATTERN.test(line)) {
-      start += 1
-      continue
-    }
-
-    break
-  }
-
-  return lines.slice(start)
-}
-
-const cleanUserMessageText = (text, attachmentTerms) => {
-  const lines = String(text || '').split(/\r\n|\n|\r/)
-  const lastAttachmentLineIndex = lines.reduce((lastIndex, line, index) => {
-    return isAttachmentReferenceLine(line, attachmentTerms) ? index : lastIndex
-  }, -1)
-
-  if (lastAttachmentLineIndex === -1) {
-    return text
-  }
-
-  const trailingText = stripLeadingAttachmentSectionLabels(lines.slice(lastAttachmentLineIndex + 1)).join('\n').trim()
-
-  if (trailingText) {
-    return trailingText
-  }
-
-  return lines
-    .filter(line => !isAttachmentReferenceLine(line, attachmentTerms) && !MARKDOWN_HEADING_PATTERN.test(line.trim()))
-    .join('\n')
-    .trim()
-}
-
-const extractUserInputText = input => {
-  if (!input || typeof input !== 'object') {
-    return ''
-  }
-
-  if (input.type === 'text' && typeof input.text === 'string') {
-    return input.text
-  }
-
-  if (input.type === 'mention' && typeof input.path === 'string') {
-    return input.name ? `@${input.name}` : input.path
-  }
-
-  if (input.type === 'skill' && typeof input.name === 'string') {
-    return `$${input.name}`
-  }
-
-  return ''
-}
-
-const extractUserInputAttachmentTerms = input => {
-  if (!input || typeof input !== 'object') {
-    return []
-  }
-
-  if (input.type === 'localImage' && typeof input.path === 'string') {
-    return getAttachmentReferenceTerms(input.path)
-  }
-
-  if (input.type === 'image' && typeof input.url === 'string') {
-    return getAttachmentReferenceTerms(input.url)
-  }
-
-  return []
-}
-
-const extractUserMessageContent = item => {
-  const content = Array.isArray(item?.content) ? item.content : []
-  const attachmentTerms = content.flatMap(extractUserInputAttachmentTerms)
-  const rawText = content.map(extractUserInputText).filter(Boolean).join('\n')
-  const heartbeatInstructions = extractHeartbeatInstructionsText(rawText)
-
-  if (heartbeatInstructions != null) {
-    return {
-      text: heartbeatInstructions,
-      hasAttachment: false
-    }
-  }
-
-  return {
-    text: cleanUserMessageText(rawText, [...new Set(attachmentTerms)]),
-    hasAttachment: attachmentTerms.length > 0 || content.some(input => input?.type === 'localImage' || input?.type === 'image')
-  }
-}
-
-const createSearchText = text => {
-  const firstLine = String(text || '').trimStart().split(/\r\n|\n|\r/, 1)[0] || ''
-  const normalized = normalizeMessageWhitespace(firstLine)
-
-  if (normalized.length <= THREAD_MESSAGE_SEARCH_TEXT_MAX_LENGTH) {
-    return normalized
-  }
-
-  return normalized.slice(0, THREAD_MESSAGE_SEARCH_TEXT_MAX_LENGTH)
-}
-
-const epochSecondsToMs = value => {
-  return typeof value === 'number' && Number.isFinite(value) ? value * 1000 : null
-}
-
-const extractAssistantFinalText = items => {
-  if (!Array.isArray(items)) {
-    return { text: '', itemId: '' }
-  }
-
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index]
-
-    if (item?.type === 'agentMessage' && item.phase === 'final_answer' && typeof item.text === 'string') {
-      const text = normalizeMessageWhitespace(item.text)
-
-      if (text) {
-        return {
-          text,
-          itemId: typeof item.id === 'string' ? item.id : ''
-        }
-      }
-    }
-  }
-
-  return { text: '', itemId: '' }
-}
-
-const readThreadTurnPreviews = async (client, threadId) => {
-  const response = await client.request('thread/read', {
-    threadId,
-    includeTurns: true
-  }, 15000)
-  const turns = Array.isArray(response?.thread?.turns) ? response.thread.turns : []
-  const turnPreviews = []
-
-  for (const turn of turns) {
-    const items = Array.isArray(turn?.items) ? turn.items : []
-    const assistantFinal = extractAssistantFinalText(items)
-
-    for (const item of items) {
-      if (item?.type !== 'userMessage') {
-        continue
-      }
-
-      const { text, hasAttachment } = extractUserMessageContent(item)
-      const preview = normalizeMessageWhitespace(text)
-
-      if (!preview && !hasAttachment) {
-        continue
-      }
-
-      const turnId = typeof turn.id === 'string' && turn.id ? turn.id : `turn-${turnPreviews.length + 1}`
-
-      turnPreviews.push({
-        id: `${turnId}:${item.id || turnPreviews.length}`,
-        turnId,
-        userItemId: typeof item.id === 'string' ? item.id : '',
-        userPreview: preview || IMAGE_MESSAGE_PREVIEW,
-        userSearchText: createSearchText(text),
-        assistantItemId: assistantFinal.itemId,
-        assistantPreview: assistantFinal.text,
-        createdAt: epochSecondsToMs(turn.startedAt ?? turn.completedAt),
-        index: turnPreviews.length + 1
-      })
-      break
-    }
-  }
-
-  return turnPreviews
-}
-
-const getLastUserMessagePreview = turns => {
-  if (!Array.isArray(turns)) {
-    return ''
-  }
-
-  for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
-    const items = Array.isArray(turns[turnIndex]?.items) ? turns[turnIndex].items : []
-
-    for (let itemIndex = items.length - 1; itemIndex >= 0; itemIndex -= 1) {
-      const item = items[itemIndex]
-
-      if (item?.type !== 'userMessage') {
-        continue
-      }
-
-      const { text, hasAttachment } = extractUserMessageContent(item)
-      const preview = normalizeMessageWhitespace(text)
-
-      if (preview || hasAttachment) {
-        return preview || IMAGE_MESSAGE_PREVIEW
-      }
-    }
-  }
-
-  return ''
-}
-
-const createLatestTurnSignal = turn => {
-  if (!turn || typeof turn !== 'object') {
-    return null
-  }
-
-  const status = typeof turn.status === 'string' ? turn.status : null
-  const error = turn.error ?? null
-  const hasAgentOutput = hasAgentOutputItem(turn)
-  const hasUserMessage = hasUserMessageItem(turn)
-  const emptyCompleted = status === 'completed' && hasUserMessage && !hasAgentOutput
-
-  return {
-    id: typeof turn.id === 'string' ? turn.id : null,
-    status,
-    error,
-    failed: status === 'failed' || error != null || emptyCompleted,
-    emptyCompleted,
-    hasAgentOutput
-  }
-}
-
-const createThreadOverview = turns => ({
-  latestTurnSignal: Array.isArray(turns) && turns.length > 0
-    ? createLatestTurnSignal(turns[turns.length - 1])
-    : null,
-  lastUserMessagePreview: getLastUserMessagePreview(turns)
-})
-
-const readThreadOverview = async (client, thread) => {
-  const cacheKey = thread.id
-  const cacheVersion = `${thread.updatedAt || ''}:${thread.path || ''}`
-  const cached = latestTurnSignalCache.get(cacheKey)
-
-  if (cached?.version === cacheVersion) {
-    return {
-      latestTurnSignal: cached.signal || null,
-      lastUserMessagePreview: cached.lastUserMessagePreview || ''
-    }
-  }
-
-  try {
-    const response = await client.request('thread/read', {
-      threadId: thread.id,
-      includeTurns: true
-    }, 15000)
-    const turns = response?.thread?.turns
-
-    if (!Array.isArray(turns) || turns.length === 0) {
-      latestTurnSignalCache.set(cacheKey, { version: cacheVersion, signal: null, lastUserMessagePreview: '' })
-      return { latestTurnSignal: null, lastUserMessagePreview: '' }
-    }
-
-    const overview = createThreadOverview(turns)
-
-    latestTurnSignalCache.set(cacheKey, {
-      version: cacheVersion,
-      signal: overview.latestTurnSignal,
-      lastUserMessagePreview: overview.lastUserMessagePreview
-    })
-    return overview
-  } catch {
-    return { latestTurnSignal: null, lastUserMessagePreview: '' }
-  }
-}
-
-const mapLimit = async (items, limit, mapper) => {
-  const results = []
-  let index = 0
-
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (index < items.length) {
-      const currentIndex = index
-      index += 1
-      results[currentIndex] = await mapper(items[currentIndex], currentIndex)
-    }
-  })
-
-  await Promise.all(workers)
-  return results
-}
-
-const statusKindFromThread = thread => {
-  if (thread.status?.type === 'systemError') {
-    return 'failed'
-  }
-
-  if (thread.status?.type === 'active') {
-    const flags = Array.isArray(thread.status.activeFlags) ? thread.status.activeFlags : []
-
-    if (flags.includes('waitingOnApproval') || flags.includes('waitingOnUserInput')) {
-      return 'waiting'
-    }
-
-    return 'running'
-  }
-
-  return 'idle'
-}
-
-const normalizeHookEventName = eventName => {
-  const normalized = String(eventName || '').replace(/[_\-\s]/g, '').toLowerCase()
-  const eventNamesByNormalizedName = {
-    userpromptsubmit: 'UserPromptSubmit',
-    pretooluse: 'PreToolUse',
-    permissionrequest: 'PermissionRequest',
-    posttooluse: 'PostToolUse',
-    stop: 'Stop'
-  }
-
-  return eventNamesByNormalizedName[normalized] || null
-}
-
-const hookEventNameFromFile = fileName => {
-  if (!fileName.endsWith('.json')) {
-    return null
-  }
-
-  const parts = fileName.slice(0, -5).split('.')
-  return normalizeHookEventName(parts[2])
-}
-
-const readStringField = (value, keys) => {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
-  for (const key of keys) {
-    const direct = value[key]
-
-    if (typeof direct === 'string' && direct.trim()) {
-      return direct
-    }
-  }
-
-  return null
-}
-
-const extractHookRuntimeMeta = payload => ({
-  eventName: normalizeHookEventName(readStringField(payload, ['hook_event_name', 'hookEventName'])),
-  sessionId: readStringField(payload, ['session_id', 'sessionId']),
-  turnId: readStringField(payload, ['turn_id', 'turnId']),
-  transcriptPath: readStringField(payload, ['transcript_path', 'transcriptPath']),
-  cwd: readStringField(payload, ['cwd', 'current_working_directory', 'currentWorkingDirectory'])
-})
-
-const runtimeKeyForHookMeta = meta => {
-  if (meta.sessionId) {
-    return `session:${meta.sessionId}`
-  }
-
-  if (meta.transcriptPath) {
-    return `transcript:${meta.transcriptPath}`
-  }
-
-  return null
-}
-
-const normalizeFailureKey = key => String(key || '').replace(/[_\-\s]/g, '').toLowerCase()
-
-const isFailureStatusValue = value => {
-  if (typeof value !== 'string') {
-    return false
-  }
-
-  return ['failed', 'failure', 'error', 'exception'].includes(value.trim().toLowerCase())
-}
-
-const isNonZeroNumber = value => typeof value === 'number' && Number.isFinite(value) && value !== 0
-
-const hasStructuredFailureMarker = (value, depth = 0) => {
-  if (depth > 10 || value == null) {
-    return false
-  }
-
-  if (Array.isArray(value)) {
-    return value.some(item => hasStructuredFailureMarker(item, depth + 1))
-  }
-
-  if (typeof value !== 'object') {
-    return false
-  }
-
-  for (const [rawKey, rawValue] of Object.entries(value)) {
-    const key = normalizeFailureKey(rawKey)
-
-    if (['status', 'state', 'outcome', 'result'].includes(key) && isFailureStatusValue(rawValue)) {
-      return true
-    }
-
-    if (['exitcode', 'exitstatus', 'code'].includes(key) && isNonZeroNumber(rawValue)) {
-      return true
-    }
-
-    if (['success', 'ok'].includes(key) && rawValue === false) {
-      return true
-    }
-
-    if (['failed', 'error', 'failure', 'exception', 'toolerror'].includes(key)) {
-      if (rawValue === true) {
-        return true
-      }
-
-      if (typeof rawValue === 'string' && rawValue.trim()) {
-        return true
-      }
-
-      if (rawValue && typeof rawValue === 'object' && Object.keys(rawValue).length > 0) {
-        return true
-      }
-    }
-
-    if (['errortype', 'errormessage', 'failurereason'].includes(key) && typeof rawValue === 'string' && rawValue.trim()) {
-      return true
-    }
-
-    if (hasStructuredFailureMarker(rawValue, depth + 1)) {
-      return true
-    }
-  }
-
-  return false
-}
-
-const extractFailureReason = value => {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
-  for (const [rawKey, rawValue] of Object.entries(value)) {
-    const key = normalizeFailureKey(rawKey)
-
-    if (['errormessage', 'failurereason', 'error', 'failure', 'exception', 'toolerror'].includes(key) && typeof rawValue === 'string' && rawValue.trim()) {
-      return rawValue.trim().slice(0, 240)
-    }
-
-    if (rawValue && typeof rawValue === 'object') {
-      const nested = extractFailureReason(rawValue)
-
-      if (nested) {
-        return nested
-      }
-    }
-  }
-
-  return null
-}
-
-const runtimeStatusFromHookEvent = (eventName, payload) => {
-  if (eventName === 'PermissionRequest') {
-    return 'waiting'
-  }
-
-  if (eventName === 'UserPromptSubmit' || eventName === 'PreToolUse') {
-    return 'running'
-  }
-
-  if (eventName === 'PostToolUse') {
-    return hasStructuredFailureMarker(payload?.tool_response ?? payload) ? 'failed' : 'running'
-  }
-
-  if (eventName === 'Stop') {
-    return hasStructuredFailureMarker(payload) ? 'failed' : 'idle'
-  }
-
-  return null
-}
-
-const applyHookEventToRuntimeState = (state, fileEventName, payload, updatedAt) => {
-  const meta = extractHookRuntimeMeta(payload)
-  const eventName = normalizeHookEventName(meta.eventName || fileEventName)
-  const runtimeStatus = runtimeStatusFromHookEvent(eventName, payload)
-  const key = runtimeKeyForHookMeta(meta)
-
-  if (!eventName || !runtimeStatus || !key) {
-    return false
-  }
-
-  if (runtimeStatus === 'idle') {
-    if (state.threads[key]) {
-      delete state.threads[key]
-      return true
-    }
-
-    return false
-  }
-
-  state.threads[key] = {
-    status: runtimeStatus,
-    updatedAt,
-    eventName,
-    sessionId: meta.sessionId,
-    turnId: meta.turnId,
-    transcriptPath: meta.transcriptPath,
-    cwd: meta.cwd,
-    failureReason: runtimeStatus === 'failed' ? extractFailureReason(payload) : null
-  }
-
-  return true
-}
-
-const persistContextUsageFromHookPayload = async (fileEventName, payload) => {
-  const meta = extractHookRuntimeMeta(payload)
-  const eventName = normalizeHookEventName(meta.eventName || fileEventName)
-
-  if (eventName !== 'Stop' || !meta.sessionId || !meta.transcriptPath) {
-    return false
-  }
-
-  const usage = await readLatestTranscriptContextUsage(meta.transcriptPath, meta.sessionId)
-
-  return Boolean(persistContextUsage(usage))
-}
-
-const readHookEventFiles = async () => {
-  try {
-    const names = await fsp.readdir(getHookEventsDir())
-
-    return names
-      .filter(name => !name.startsWith('.') && name.endsWith('.json'))
-      .sort()
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      return []
-    }
-
-    throw error
-  }
-}
-
-const processHookEvents = async () => {
-  if (hookEventProcessingPromise) {
-    return hookEventProcessingPromise
-  }
-
-  hookEventProcessingPromise = (async () => {
-    await fsp.mkdir(getHookEventsDir(), { recursive: true })
-
-    while (true) {
-      const files = await readHookEventFiles()
-
-      if (files.length === 0) {
-        break
-      }
-
-      const state = await readRuntimeState()
-      let runtimeChanged = false
-      let shouldBroadcast = false
-      const processedFiles = []
-
-      for (const fileName of files) {
-        const filePath = path.join(getHookEventsDir(), fileName)
-        const fileEventName = hookEventNameFromFile(fileName)
-
-        try {
-          const payload = JSON.parse(await fsp.readFile(filePath, 'utf8'))
-          const hookRuntimeChanged = applyHookEventToRuntimeState(state, fileEventName, payload, Date.now())
-          const contextUsageChanged = await persistContextUsageFromHookPayload(fileEventName, payload)
-
-          runtimeChanged = hookRuntimeChanged || runtimeChanged
-          shouldBroadcast = hookRuntimeChanged || contextUsageChanged || shouldBroadcast
-        } catch {
-          // Invalid hook payloads are removed from the queue so one bad file
-          // cannot block later Codex lifecycle events.
-        }
-
-        processedFiles.push(filePath)
-      }
-
-      if (runtimeChanged) {
-        await saveRuntimeState(state)
-      }
-
-      if (shouldBroadcast) {
-        scheduleCodexStoreBroadcast()
-      }
-
-      await Promise.all(processedFiles.map(filePath => fsp.rm(filePath, { force: true })))
-    }
-  })().finally(() => {
-    hookEventProcessingPromise = null
-  })
-
-  return hookEventProcessingPromise
-}
-
-const scheduleHookEventProcessing = () => {
-  if (hookEventTimer) {
-    clearTimeout(hookEventTimer)
-  }
-
-  hookEventTimer = setTimeout(() => {
-    hookEventTimer = null
-    void processHookEvents()
-  }, HOOK_EVENT_PROCESS_DEBOUNCE_MS)
-}
-
-const watchHookEvents = async () => {
-  if (hookEventsWatcher) {
-    hookEventsWatcher.close()
-    hookEventsWatcher = null
-  }
-
-  await fsp.mkdir(getHookEventsDir(), { recursive: true })
-  await processHookEvents()
-
-  hookEventsWatcher = fs.watch(getHookEventsDir(), { persistent: false }, () => {
-    scheduleHookEventProcessing()
-  })
-}
-
-const runtimeEntryMatchesThread = (entry, thread) => {
-  return Boolean(
-    (entry.sessionId && (entry.sessionId === thread.sessionId || entry.sessionId === thread.id)) ||
-    (entry.transcriptPath && entry.transcriptPath === thread.path)
-  )
-}
-
-const findRuntimeRecordsForThread = (runtimeState, thread) => {
-  return Object.entries(runtimeState.threads || {})
-    .filter(([, entry]) => runtimeEntryMatchesThread(entry, thread))
-    .map(([key, entry]) => ({ key, entry }))
-    .sort((left, right) => (right.entry.updatedAt || 0) - (left.entry.updatedAt || 0))
-}
-
-const isTerminalTurnStatus = status => ['completed', 'interrupted'].includes(status)
-
-const isFailedTurnStatus = status => status === 'failed'
-
-const isFailedLatestTurnSignal = signal => Boolean(signal?.failed || isFailedTurnStatus(signal?.status))
-
-const readTranscriptTurnLifecycle = async (transcriptPath, turnId) => {
-  if (!transcriptPath || !turnId) {
-    return null
-  }
-
-  try {
-    const contents = await fsp.readFile(transcriptPath, 'utf8')
-    const lines = contents.split('\n')
-    let lifecycle = null
-
-    for (const line of lines) {
-      if (!line.trim()) {
-        continue
-      }
-
-      try {
-        const event = JSON.parse(line)
-        const payload = event?.payload
-
-        if (event?.type !== 'event_msg' || payload?.turn_id !== turnId) {
-          continue
-        }
-
-        if (payload.type === 'task_complete') {
-          lifecycle = 'completed'
-        }
-
-        if (payload.type === 'turn_aborted') {
-          lifecycle = 'interrupted'
-        }
-      } catch {
-        // A malformed transcript line should not block state reconciliation.
-      }
-    }
-
-    return lifecycle
-  } catch {
-    return null
-  }
-}
-
-const reconcileRuntimeStateWithTranscript = async runtimeState => {
-  let changed = false
-
-  for (const [key, entry] of Object.entries(runtimeState.threads || {})) {
-    if (!RUNTIME_CORRECTION_STATUSES.has(entry.status)) {
-      continue
-    }
-
-    const lifecycle = await readTranscriptTurnLifecycle(entry.transcriptPath, entry.turnId)
-
-    if (isTerminalTurnStatus(lifecycle) && runtimeState.threads[key]) {
-      delete runtimeState.threads[key]
-      changed = true
-    }
-  }
-
-  if (!changed) {
-    return runtimeState
-  }
-
-  return saveRuntimeState(runtimeState)
-}
-
-const sidecarStatusFromSignals = ({ completedUnread, runtimeStatus, runtimeTurnId, statusKind, latestTurnSignal }) => {
-  const failedLatestTurn = isFailedLatestTurnSignal(latestTurnSignal)
-  const runtimeMatchesLatestTurn = Boolean(runtimeTurnId && latestTurnSignal?.id && runtimeTurnId === latestTurnSignal.id)
-
-  if (runtimeStatus === 'failed' || statusKind === 'failed' || ((!runtimeStatus || runtimeMatchesLatestTurn) && failedLatestTurn)) {
-    return 'failed'
-  }
-
-  if (statusKind === 'waiting' || runtimeStatus === 'waiting') {
-    return 'waiting'
-  }
-
-  if (statusKind === 'running' || runtimeStatus === 'running') {
-    return 'running'
-  }
-
-  if (completedUnread) {
-    return 'completedUnread'
-  }
-
-  if (statusKind === 'idle' || isTerminalTurnStatus(latestTurnSignal?.status)) {
-    return 'idle'
-  }
-
-  return 'unknown'
-}
-
-const isDefaultCodexConversationCwd = cwd => {
-  const relativePath = path.relative(DEFAULT_CODEX_CONVERSATION_ROOT, cwd)
-
-  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-    return false
-  }
-
-  const segments = relativePath.split(path.sep).filter(Boolean)
-
-  return segments.length === 2 && /^\d{4}-\d{2}-\d{2}$/.test(segments[0])
-}
-
-const getProjectName = cwd => {
-  if (!cwd || typeof cwd !== 'string') {
-    return PROJECTLESS_THREAD_LABEL
-  }
-
-  const normalizedCwd = path.resolve(cwd)
-
-  // Projectless Codex Desktop chats still have an auto-created cwd under
-  // ~/Documents/Codex/YYYY-MM-DD/<slug>; show the conversation type instead of
-  // leaking the generated slug as a project name.
-  if (isDefaultCodexConversationCwd(normalizedCwd)) {
-    return PROJECTLESS_THREAD_LABEL
-  }
-
-  return path.basename(normalizedCwd) || cwd
-}
-
-const getRecentActivity = (thread, latestTurnStatus, sidecarStatus) => {
-  if (sidecarStatus === 'running') {
-    return '正在运行'
-  }
-
-  if (sidecarStatus === 'waiting') {
-    return '等待用户处理'
-  }
-
-  if (sidecarStatus === 'failed') {
-    return '最近一次任务失败'
-  }
-
-  if (latestTurnStatus === 'completed') {
-    return '最近一次任务已完成'
-  }
-
-  if (latestTurnStatus === 'failed') {
-    return '最近一次任务失败'
-  }
-
-  if (latestTurnStatus === 'interrupted') {
-    return '最近一次任务已中断'
-  }
-
-  return thread.preview || '暂无活动摘要'
-}
-
-const normalizeRateLimitWindow = limitWindow => {
-  if (!limitWindow) {
-    return null
-  }
-
-  const usedPercent = Math.round(limitWindow.usedPercent ?? 0)
-
-  return {
-    label: typeof limitWindow.label === 'string' ? limitWindow.label : null,
-    usedPercent,
-    remainingPercent: Math.max(0, Math.min(100, 100 - usedPercent)),
-    windowDurationMins: limitWindow.windowDurationMins ?? null,
-    resetsAt: limitWindow.resetsAt ? limitWindow.resetsAt * 1000 : null
-  }
-}
-
-const normalizeRateLimits = response => {
-  const rateLimitEntries = Object.values(response?.rateLimitsByLimitId || {})
-  const primaryRateLimit = rateLimitEntries.find(entry => entry?.limitId === 'codex') || response?.rateLimits || rateLimitEntries[0] || null
-
-  return {
-    limitId: primaryRateLimit?.limitId || null,
-    limitName: primaryRateLimit?.limitName || null,
-    primary: normalizeRateLimitWindow(primaryRateLimit?.primary),
-    secondary: normalizeRateLimitWindow(primaryRateLimit?.secondary)
-  }
-}
-
-const refreshRateLimits = async client => {
-  if (rateLimitsRefreshPromise) {
-    return rateLimitsRefreshPromise
-  }
-
-  rateLimitsRefreshPromise = client.request('account/rateLimits/read', undefined, 12000)
-    .then(response => {
-      cachedRateLimits = normalizeRateLimits(response)
-      cachedRateLimitsUpdatedAt = Date.now()
-      return cachedRateLimits
-    })
-    .finally(() => {
-      rateLimitsRefreshPromise = null
-    })
-
-  return rateLimitsRefreshPromise
-}
-
-const refreshRateLimitsInBackground = (client, { force = false } = {}) => {
-  const stale = !cachedRateLimits || Date.now() - cachedRateLimitsUpdatedAt > RATE_LIMITS_BACKGROUND_REFRESH_INTERVAL_MS
-
-  if (rateLimitsRefreshPromise || (!force && !stale)) {
-    return
-  }
-
-  void refreshRateLimits(client)
-    .then(() => {
-      scheduleCodexStoreBroadcast()
-    })
-    .catch(() => {
-      // Rate limits are auxiliary UI data; failed refreshes should not block thread state.
-    })
-}
-
-const refreshAccountUsage = async client => {
-  if (accountUsageRefreshPromise) {
-    return accountUsageRefreshPromise
-  }
-
-  accountUsageRefreshPromise = client.request('account/usage/read', undefined, 12000)
-    .then(response => {
-      const normalizedUsage = normalizeAccountUsageResponse(response)
-
-      if (normalizedUsage) {
-        cachedAccountUsage = normalizedUsage
-        cachedAccountUsageUpdatedAt = Date.now()
-      }
-
-      return cachedAccountUsage
-    })
-    .finally(() => {
-      accountUsageRefreshPromise = null
-    })
-
-  return accountUsageRefreshPromise
-}
-
-const refreshAccountUsageInBackground = (client, { force = false } = {}) => {
-  const stale = !cachedAccountUsage || Date.now() - cachedAccountUsageUpdatedAt > ACCOUNT_USAGE_BACKGROUND_REFRESH_INTERVAL_MS
-
-  if (accountUsageRefreshPromise || (!force && !stale)) {
-    return
-  }
-
-  void refreshAccountUsage(client)
-    .then(() => {
-      scheduleCodexStoreBroadcast()
-    })
-    .catch(() => {
-      // Account usage is auxiliary UI data; failed refreshes should not block thread state.
-    })
-}
-
-const shouldReadLocalTodayTokenEstimate = (thread, todayKey) => {
-  if (!thread?.path) {
-    return false
-  }
-
-  const updatedAt = epochSecondsToMs(thread.updatedAt)
-  const createdAt = epochSecondsToMs(thread.createdAt)
-
-  return [updatedAt, createdAt].some(value => {
-    return value && toLocalDateKey(new Date(value)) === todayKey
-  })
-}
-
-const readLocalTodayTokenEstimate = async threads => {
-  const todayKey = toLocalDateKey(new Date())
-  const candidates = threads.filter(thread => shouldReadLocalTodayTokenEstimate(thread, todayKey))
-  const estimates = await mapLimit(candidates, 4, thread => readLocalTodayTokenEstimateForThread(thread, todayKey))
-  const validEstimates = estimates.filter(Boolean)
-  const updatedAtValues = validEstimates
-    .map(estimate => estimate.updatedAt)
-    .filter(value => typeof value === 'number' && Number.isFinite(value))
-
-  return {
-    date: todayKey,
-    tokens: validEstimates.reduce((total, estimate) => total + estimate.tokens, 0),
-    source: 'localTranscript',
-    threadCount: validEstimates.length,
-    eventCount: validEstimates.reduce((total, estimate) => total + estimate.eventCount, 0),
-    updatedAt: updatedAtValues.length > 0 ? Math.max(...updatedAtValues) : Date.now()
-  }
-}
-
-const accountUsageForCodexStore = (accountUsage, localTodayEstimate) => {
-  const base = accountUsage || {
-    summary: {
-      lifetimeTokens: 0,
-      peakDailyTokens: 0,
-      longestRunningTurnSec: 0,
-      currentStreakDays: 0,
-      longestStreakDays: 0
-    },
-    dailyUsageBuckets: [],
-    updatedAt: Date.now()
-  }
-
-  return {
-    ...base,
-    localTodayEstimate
-  }
-}
-
-const getContextUsageForThread = (contextUsageByThread, thread) => {
-  return contextUsageByThread[thread.id] || (thread.sessionId ? contextUsageByThread[thread.sessionId] : null) || null
-}
-
-const shouldReadRecentTranscriptContextUsage = thread => {
-  const updatedAt = epochSecondsToMs(thread.updatedAt)
-
-  return Boolean(
-    thread.id &&
-    thread.path &&
-    updatedAt &&
-    updatedAt >= appStartedAt - CONTEXT_USAGE_TRANSCRIPT_REFRESH_GRACE_MS
-  )
-}
-
-const hydrateRecentContextUsageFromTranscripts = async (threads, contextUsageByThread) => {
-  const candidates = threads.filter(thread => {
-    return !getContextUsageForThread(contextUsageByThread, thread) && shouldReadRecentTranscriptContextUsage(thread)
-  })
-
-  if (candidates.length === 0) {
-    return
-  }
-
-  const entries = await mapLimit(candidates, 4, async thread => {
-    const usage = await readLatestTranscriptContextUsage(thread.path, thread.id)
-    const persistedUsage = persistContextUsage(usage)
-
-    return persistedUsage ? [thread.id, persistedUsage] : null
-  })
-
-  for (const entry of entries) {
-    if (entry) {
-      contextUsageByThread[entry[0]] = entry[1]
-    }
-  }
-}
-
-const createCodexStore = async () => {
-  await processHookEvents()
-
-  const contextUsageByThread = getSidecarStore().getContextUsageByThread()
-  let runtimeState = await readRuntimeState()
-  const nativeUnread = getNativeUnreadState()
-  const unreadSet = new Set(nativeUnread.available ? nativeUnread.ids : [])
-  const client = await getCodexClient()
-  const threads = await listAllThreads(client)
-  const localTodayEstimate = await readLocalTodayTokenEstimate(threads)
-
-  refreshRateLimitsInBackground(client)
-  refreshAccountUsageInBackground(client)
-  await hydrateRecentContextUsageFromTranscripts(threads, contextUsageByThread)
-
-  runtimeState = await reconcileRuntimeStateWithTranscript(runtimeState)
-  const statusKindByThreadId = new Map()
-  const currentThreadIds = new Set(threads.map(thread => thread.id))
-
-  for (const thread of threads) {
-    const statusKind = statusKindFromThread(thread)
-
-    statusKindByThreadId.set(thread.id, statusKind)
-  }
-
-  for (const threadId of latestTurnSignalCache.keys()) {
-    if (!currentThreadIds.has(threadId)) {
-      latestTurnSignalCache.delete(threadId)
-    }
-  }
-
-  const threadOverviewEntries = await mapLimit(threads, 4, async thread => [
-    thread.id,
-    await readThreadOverview(client, thread)
-  ])
-  const threadOverviewById = Object.fromEntries(threadOverviewEntries)
-  const reconciledRuntimeRecordsByThreadId = new Map()
-
-  for (const thread of threads) {
-    const runtimeRecords = findRuntimeRecordsForThread(runtimeState, thread)
-
-    if (runtimeRecords.length > 0) {
-      reconciledRuntimeRecordsByThreadId.set(thread.id, runtimeRecords)
-    }
-  }
-
-  const summaries = threads.map(thread => {
-    const threadOverview = threadOverviewById[thread.id] || {}
-    const latestTurnSignal = threadOverview.latestTurnSignal || null
-    const latestTurnStatus = latestTurnSignal?.status || null
-    const unread = nativeUnread.available && unreadSet.has(thread.id)
-    const completedUnread = Boolean(unread && latestTurnStatus === 'completed' && !latestTurnSignal?.failed)
-    const runtimeEntry = reconciledRuntimeRecordsByThreadId.get(thread.id)?.[0]?.entry || null
-    const statusKind = statusKindByThreadId.get(thread.id) || statusKindFromThread(thread)
-    const sidecarStatus = sidecarStatusFromSignals({
-      completedUnread,
-      runtimeStatus: runtimeEntry?.status || null,
-      runtimeTurnId: runtimeEntry?.turnId || null,
-      statusKind,
-      latestTurnSignal
-    })
-    const contextUsage = getContextUsageForThread(contextUsageByThread, thread)
-    const title = thread.name || thread.preview || '未命名对话'
-
-    return {
-      id: thread.id,
-      sessionId: thread.sessionId,
-      title,
-      codexTitle: thread.name || thread.preview || '未命名对话',
-      preview: thread.preview || '',
-      cwd: thread.cwd || '',
-      projectName: getProjectName(thread.cwd),
-      createdAt: thread.createdAt ? thread.createdAt * 1000 : null,
-      updatedAt: thread.updatedAt ? thread.updatedAt * 1000 : null,
-      status: thread.status || { type: 'notLoaded' },
-      statusKind,
-      sidecarStatus,
-      latestTurnStatus,
-      lastUserMessagePreview: threadOverview.lastUserMessagePreview || '',
-      recentActivity: getRecentActivity(thread, latestTurnStatus, sidecarStatus),
-      unread,
-      completedUnread,
-      contextUsage,
-      gitBranch: thread.gitInfo?.branch || null,
-      source: thread.source || null,
-      path: thread.path || null
-    }
-  })
-
-  return {
-    generatedAt: Date.now(),
-    connection: client.getStatus(),
-    nativeUnread: {
-      available: nativeUnread.available,
-      path: nativeUnread.path,
-      count: nativeUnread.count,
-      error: nativeUnread.error
-    },
-    rateLimits: cachedRateLimits,
-    accountUsage: accountUsageForCodexStore(cachedAccountUsage, localTodayEstimate),
-    threads: summaries
-  }
-}
-
-const safeCodexStore = async () => {
-  try {
-    return await createCodexStore()
-  } catch (error) {
-    return {
-      generatedAt: Date.now(),
-      connection: codexClient?.getStatus() || {
-        connected: false,
-        lastError: error instanceof Error ? error.message : String(error)
-      },
-      nativeUnread: {
-        ...(cachedNativeUnread || getNativeUnreadState()),
-        ids: undefined
-      },
-      rateLimits: cachedRateLimits,
-      accountUsage: cachedAccountUsage,
-      threads: [],
-      error: error instanceof Error ? error.message : String(error)
-    }
-  }
-}
-
-function scheduleCodexStoreBroadcast() {
-  const hasTargetWindow = [mainWindow, miniWindow].some(browserWindow => browserWindow && !browserWindow.isDestroyed())
-
-  if (!hasTargetWindow) {
-    return
-  }
-
-  if (codexStoreTimer) {
-    clearTimeout(codexStoreTimer)
-  }
-
-  codexStoreTimer = setTimeout(async () => {
-    codexStoreTimer = null
-    await sendCodexStore()
-  }, CODEX_STORE_DEBOUNCE_MS)
-}
-
-async function sendCodexStore() {
-  const targetWindows = [mainWindow, miniWindow].filter(browserWindow => browserWindow && !browserWindow.isDestroyed())
-
-  if (targetWindows.length === 0) {
-    return
-  }
-
-  const codexStore = await safeCodexStore()
-
-  for (const targetWindow of targetWindows) {
-    targetWindow.webContents.send('sidecar:codexStore', codexStore)
-  }
 }
 
 async function sendSidecarDataChanged(sidecarData) {
@@ -2534,7 +876,7 @@ function sendSidecarHookStatusChanged(status = sidecarHookStatus) {
   }
 }
 
-function sendExplorationsChanged() {
+async function sendExplorationsChanged() {
   const targetWindows = [mainWindow, miniWindow, ...explorationResultWindows.values()]
     .filter(browserWindow => browserWindow && !browserWindow.isDestroyed())
 
@@ -2542,7 +884,7 @@ function sendExplorationsChanged() {
     return
   }
 
-  const explorations = getSidecarStore().listExplorationRuns()
+  const explorations = await getSidecarStore().listExplorationRuns()
 
   for (const targetWindow of targetWindows) {
     targetWindow.webContents.send('sidecar:explorationsChanged', explorations)
@@ -2552,7 +894,7 @@ function sendExplorationsChanged() {
 const schedulePostOpenCodexStoreBroadcast = () => {
   for (const delayMs of POST_OPEN_CODEX_STORE_DELAYS_MS) {
     setTimeout(() => {
-      void sendCodexStore()
+      void dataEngine?.request('projection.refresh', null).catch(() => undefined)
     }, delayMs)
   }
 }
@@ -2989,6 +1331,30 @@ const loadRenderer = (browserWindow, mode, extraQuery = {}) => {
   })
 }
 
+const monitorWebContents = (browserWindow, label) => {
+  browserWindow.webContents.on('render-process-gone', (_event, details) => {
+    diagnostics.record('renderer.gone', {
+      label,
+      ...details
+    })
+  })
+  browserWindow.on('unresponsive', () => {
+    diagnostics.record('renderer.unresponsive', {
+      label
+    })
+  })
+  browserWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) {
+      diagnostics.record('renderer.loadFailed', {
+        label,
+        errorCode,
+        errorDescription,
+        validatedURL
+      })
+    }
+  })
+}
+
 const createExplorationResultWindow = explorationId => {
   const normalizedId = normalizeExplorationString(explorationId, 120).trim()
 
@@ -3024,6 +1390,7 @@ const createExplorationResultWindow = explorationId => {
   })
 
   explorationResultWindows.set(normalizedId, resultWindow)
+  monitorWebContents(resultWindow, 'exploration-result')
 
   resultWindow.once('ready-to-show', () => {
     if (!resultWindow.isDestroyed()) {
@@ -3064,6 +1431,10 @@ const createWindow = () => {
       sandbox: false
     }
   })
+  monitorWebContents(mainWindow, 'main')
+  mainWindow.webContents.on('did-finish-load', () => {
+    attachDataEngineToWindow(mainWindow)
+  })
 
   mainWindow.on('move', () => {
     scheduleWindowBoundsSave(mainWindow, 'full')
@@ -3080,7 +1451,6 @@ const createWindow = () => {
   mainWindow.once('ready-to-show', () => {
     positionWindow(mainWindow, 'full')
     mainWindow.show()
-    scheduleCodexStoreBroadcast()
   })
 
   loadRenderer(mainWindow, 'full')
@@ -3123,6 +1493,10 @@ const createMiniWindow = () => {
       sandbox: false
     }
   })
+  monitorWebContents(miniWindow, 'mini')
+  miniWindow.webContents.on('did-finish-load', () => {
+    attachDataEngineToWindow(miniWindow)
+  })
 
   if (process.platform === 'darwin') {
     miniWindow.setVisibleOnAllWorkspaces(true, {
@@ -3160,7 +1534,6 @@ const createMiniWindow = () => {
       miniWindow.showInactive()
     }
 
-    void sendCodexStore()
   })
 
   miniWindow.once('closed', () => {
@@ -3231,6 +1604,7 @@ const createPopupMenuWindow = () => {
       sandbox: false
     }
   })
+  monitorWebContents(popupMenuWindow, 'popup-menu')
 
   if (process.platform === 'darwin') {
     popupMenuWindow.setVisibleOnAllWorkspaces(true, {
@@ -3338,7 +1712,6 @@ const showFullWindow = (options = {}) => {
   mainWindow.show()
   mainWindow.focus()
   sendSelectPanelToWindow(mainWindow, options.activePanel)
-  void sendCodexStore()
 
   return true
 }
@@ -3354,7 +1727,6 @@ const showMiniToolWindow = () => {
 
   if (!targetMiniWindow.webContents.isLoading()) {
     targetMiniWindow.showInactive()
-    void sendCodexStore()
   }
 
   return true
@@ -3377,8 +1749,8 @@ const applyShowMiniTool = value => normalizeShowMiniTool(value) && sidecarHookSt
   ? showMiniToolWindow()
   : hideMiniToolWindow()
 
-const applyStoredMiniToolVisibility = () => {
-  const settings = getSidecarStore().getSidecarData().settings
+const applyStoredMiniToolVisibility = async () => {
+  const settings = (await getSidecarStore().getSidecarData()).settings
   applyShowMiniTool(settings.showMiniTool)
 }
 
@@ -3401,7 +1773,7 @@ const refreshSidecarHookStatus = async (options = {}) => {
     }
 
     if (options.applyMini !== false) {
-      applyStoredMiniToolVisibility()
+      await applyStoredMiniToolVisibility()
     }
 
     if (options.broadcast !== false) {
@@ -4225,10 +2597,9 @@ const createExplorationRun = async request => {
     throw new Error('优选内容不能为空。')
   }
 
-  const client = await getCodexClient()
   const runId = crypto.randomUUID()
   const sourceThread = sourceThreadId
-    ? (await listAllThreads(client)).find(thread => thread.id === sourceThreadId) || null
+    ? (await dataEngine.request('projection.get', null)).codexStore?.threads.find(thread => thread.id === sourceThreadId) || null
     : null
 
   if (sourceThreadId && !sourceThread) {
@@ -4265,15 +2636,22 @@ const createExplorationRun = async request => {
     summary: createDefaultExplorationSummary()
   })
 
-  const savedRun = getSidecarStore().saveExplorationRun(run)
+  const savedRun = await getSidecarStore().saveExplorationRun(run)
 
-  sendExplorationsChanged()
+  await sendExplorationsChanged()
   void runExploration(savedRun.id)
 
   return savedRun
 }
 
-ipcMain.handle('sidecar:getCodexStore', async () => safeCodexStore())
+ipcMain.handle('sidecar:getCodexProjection', async () => {
+  const projection = await dataEngine.request('projection.get', null)
+
+  return {
+    ...projection,
+    generation: dataEngine.getGeneration()
+  }
+})
 
 ipcMain.handle('sidecar:getSidecarData', async () => readSidecarData())
 
@@ -4325,21 +2703,21 @@ ipcMain.handle('sidecar:savePromptTemplates', async (_event, templates) => {
     throw new Error('templates must be an array.')
   }
 
-  const promptTemplates = getSidecarStore().savePromptTemplates(normalizePromptTemplates(templates))
+  const promptTemplates = await getSidecarStore().savePromptTemplates(normalizePromptTemplates(templates))
 
   await sendSidecarDataChanged()
   return promptTemplates
 })
 
 ipcMain.handle('sidecar:setLanguageMode', async (_event, languageMode) => {
-  const settings = getSidecarStore().updateSettings({ languageMode: normalizeLanguageMode(languageMode) })
+  const settings = await getSidecarStore().updateSettings({ languageMode: normalizeLanguageMode(languageMode) })
 
   await sendSidecarDataChanged()
   return settings
 })
 
 ipcMain.handle('sidecar:setThemeMode', async (_event, themeMode) => {
-  const settings = getSidecarStore().updateSettings({ themeMode: normalizeThemeMode(themeMode) })
+  const settings = await getSidecarStore().updateSettings({ themeMode: normalizeThemeMode(themeMode) })
 
   applyThemeModeToNativeTheme(settings.themeMode)
   await sendSidecarDataChanged()
@@ -4347,7 +2725,7 @@ ipcMain.handle('sidecar:setThemeMode', async (_event, themeMode) => {
 })
 
 ipcMain.handle('sidecar:setMiniOverDock', async (_event, miniOverDock) => {
-  const settings = getSidecarStore().updateSettings({ miniOverDock: normalizeMiniOverDock(miniOverDock) })
+  const settings = await getSidecarStore().updateSettings({ miniOverDock: normalizeMiniOverDock(miniOverDock) })
 
   applyMiniOverDock(settings.miniOverDock)
   await sendSidecarDataChanged()
@@ -4355,7 +2733,7 @@ ipcMain.handle('sidecar:setMiniOverDock', async (_event, miniOverDock) => {
 })
 
 ipcMain.handle('sidecar:setShowMiniTool', async (_event, showMiniTool) => {
-  const settings = getSidecarStore().updateSettings({ showMiniTool: normalizeShowMiniTool(showMiniTool) })
+  const settings = await getSidecarStore().updateSettings({ showMiniTool: normalizeShowMiniTool(showMiniTool) })
 
   applyShowMiniTool(settings.showMiniTool)
   await sendSidecarDataChanged()
@@ -4363,7 +2741,7 @@ ipcMain.handle('sidecar:setShowMiniTool', async (_event, showMiniTool) => {
 })
 
 ipcMain.handle('sidecar:setShowMiniPrompts', async (_event, showMiniPrompts) => {
-  const settings = getSidecarStore().updateSettings({ showMiniPrompts: normalizeShowMiniPrompts(showMiniPrompts) })
+  const settings = await getSidecarStore().updateSettings({ showMiniPrompts: normalizeShowMiniPrompts(showMiniPrompts) })
 
   await sendSidecarDataChanged()
   return settings
@@ -4371,10 +2749,6 @@ ipcMain.handle('sidecar:setShowMiniPrompts', async (_event, showMiniPrompts) => 
 
 ipcMain.handle('sidecar:exportData', async () => {
   const sidecarData = await readSidecarData()
-  const exportData = {
-    ...sidecarData,
-    explorations: getSidecarStore().listExplorationRuns()
-  }
   const result = await dialog.showSaveDialog(mainWindow, {
     title: getSidecarText(sidecarData.settings, 'exportTitle'),
     defaultPath: `codex-sidecar-export-${new Date().toISOString().slice(0, 10)}.json`,
@@ -4385,7 +2759,9 @@ ipcMain.handle('sidecar:exportData', async () => {
     return { canceled: true }
   }
 
-  await writeJsonAtomic(result.filePath, exportData)
+  await dataEngine.request('data.exportFile', {
+    filePath: result.filePath
+  })
   return { canceled: false, filePath: result.filePath }
 })
 
@@ -4401,16 +2777,16 @@ ipcMain.handle('sidecar:importData', async () => {
     return { canceled: true }
   }
 
-  const importedRaw = await readJsonFile(result.filePaths[0])
-  const imported = normalizeSidecarData(importedRaw)
+  const imported = await dataEngine.request('data.importFile', {
+    filePath: result.filePaths[0]
+  })
+  const settings = imported.sidecarData.settings
 
-  await saveSidecarData(imported)
-  getSidecarStore().replaceExplorationRuns(Array.isArray(importedRaw.explorations) ? importedRaw.explorations : [])
-  applyThemeModeToNativeTheme(imported.settings.themeMode)
-  applyMiniOverDock(imported.settings.miniOverDock)
-  applyShowMiniTool(imported.settings.showMiniTool)
-  await sendSidecarDataChanged(imported)
-  sendExplorationsChanged()
+  applyThemeModeToNativeTheme(settings.themeMode)
+  applyMiniOverDock(settings.miniOverDock)
+  applyShowMiniTool(settings.showMiniTool)
+  await sendSidecarDataChanged(imported.sidecarData)
+  await sendExplorationsChanged()
 
   return { canceled: false, filePath: result.filePaths[0] }
 })
@@ -4430,7 +2806,7 @@ ipcMain.handle('sidecar:continueThreadWithSummary', async (_event, threadId, cwd
   }
 
   const result = await runThreadContinuationSummary(threadId, cwd)
-  const continuationResult = getSidecarStore().saveContinuationResult({
+  const continuationResult = await getSidecarStore().saveContinuationResult({
     threadId,
     sourceUpdatedAt: normalizeNullableTimestamp(sourceUpdatedAt),
     summary: result.summary,
@@ -4447,6 +2823,14 @@ ipcMain.handle('sidecar:continueThreadWithSummary', async (_event, threadId, cwd
   }
 })
 
+ipcMain.handle('sidecar:getContinuationResult', async (_event, threadId) => {
+  if (!threadId || typeof threadId !== 'string') {
+    throw new Error('threadId is required.')
+  }
+
+  return getSidecarStore().getContinuationResult(threadId)
+})
+
 ipcMain.handle('sidecar:setContinuationResultUnread', async (_event, threadId, unread) => {
   if (!threadId || typeof threadId !== 'string') {
     throw new Error('threadId is required.')
@@ -4456,7 +2840,7 @@ ipcMain.handle('sidecar:setContinuationResultUnread', async (_event, threadId, u
     throw new Error('unread must be a boolean.')
   }
 
-  const result = getSidecarStore().setContinuationResultUnread(threadId, unread)
+  const result = await getSidecarStore().setContinuationResultUnread(threadId, unread)
 
   await sendSidecarDataChanged()
   return result
@@ -4507,7 +2891,7 @@ ipcMain.handle('sidecar:deleteExplorationRun', async (_event, runId) => {
     return null
   }
 
-  const deletedRun = getSidecarStore().deleteExplorationRun(normalizedId)
+  const deletedRun = await getSidecarStore().deleteExplorationRun(normalizedId)
 
   if (!deletedRun) {
     return null
@@ -4525,7 +2909,7 @@ ipcMain.handle('sidecar:deleteExplorationRun', async (_event, runId) => {
     // Attachment cleanup is best-effort; the Sidecar record is already deleted.
   }
 
-  sendExplorationsChanged()
+  await sendExplorationsChanged()
   return deletedRun
 })
 
@@ -4545,10 +2929,11 @@ ipcMain.handle('sidecar:getThreadTurnPreviews', async (_event, threadId) => {
     throw new Error('threadId is required.')
   }
 
-  const client = await getCodexClient()
-  const turnPreviews = await readThreadTurnPreviews(client, threadId)
-
-  return { threadId, turnPreviews }
+  return dataEngine.request('thread.turnPreviews', {
+    threadId
+  }, {
+    timeoutMs: 16000
+  })
 })
 
 ipcMain.handle('sidecar:showPopupMenu', async (event, options) => {
@@ -4636,7 +3021,7 @@ ipcMain.handle('sidecar:setWindowMode', async (_event, mode, options = {}) => {
   const nextMode = mode === 'mini' ? 'mini' : 'full'
 
   if (nextMode === 'mini') {
-    const settings = getSidecarStore().updateSettings({ showMiniTool: true })
+    const settings = await getSidecarStore().updateSettings({ showMiniTool: true })
 
     applyShowMiniTool(settings.showMiniTool)
     await sendSidecarDataChanged()
@@ -4649,6 +3034,46 @@ ipcMain.handle('sidecar:setWindowMode', async (_event, mode, options = {}) => {
 })
 
 app.whenReady().then(async () => {
+  diagnostics.record('app.startup', {
+    appVersion: APP_VERSION,
+    electronVersion: process.versions.electron,
+    chromeVersion: process.versions.chrome,
+    nodeVersion: process.versions.node,
+    platform: process.platform,
+    arch: process.arch
+  })
+  await initializeDataEngine()
+
+  if (isDataEngineSmokeMode) {
+    const projection = await dataEngine.request('projection.refresh', null, {
+      timeoutMs: 120_000
+    })
+    const health = await dataEngine.request('engine.health', null)
+
+    if (!fs.existsSync(getSidecarEngineStorePath())) {
+      throw new Error('Data-engine smoke test did not create sidecar-v2.sqlite.')
+    }
+
+    if (!projection?.codexStore || !Array.isArray(projection.codexStore.threads)) {
+      throw new Error('Data-engine smoke test did not complete its initial projection.')
+    }
+
+    process.stdout.write(`${JSON.stringify({
+      status: 'ready',
+      generation: dataEngine.getGeneration(),
+      engine: health,
+      projectionRevision: projection.revision,
+      database: path.basename(getSidecarEngineStorePath())
+    })}\n`)
+    dataEngine.dispose()
+    dataEngine = null
+    dataEngineStore = null
+    codexClient?.dispose()
+    codexClient = null
+    app.exit(0)
+    return
+  }
+
   windowState = await readWindowState()
   const initialSidecarData = await readSidecarData()
 
@@ -4657,8 +3082,6 @@ app.whenReady().then(async () => {
   currentShowMiniTool = normalizeShowMiniTool(initialSidecarData.settings.showMiniTool)
   await ensureSidecarHookIntegration()
   await refreshSidecarHookStatus({ applyMini: false, broadcast: false })
-  await watchHookEvents()
-  watchNativeUnreadState()
   initializeAutoUpdate({
     app,
     getWindows: () => BrowserWindow.getAllWindows(),
@@ -4686,6 +3109,33 @@ app.whenReady().then(async () => {
   powerMonitor.on('resume', () => {
     maybeCheckForUpdatesAfterIdle()
   })
+}).catch(error => {
+  const message = error instanceof Error ? error.message : String(error)
+
+  diagnostics.record('app.startupFailed', {
+    error
+  })
+
+  if (isDataEngineSmokeMode) {
+    process.stderr.write(`Sidecar data-engine smoke failed: ${message}\n`)
+    dataEngine?.dispose()
+    dataEngine = null
+    dataEngineStore = null
+    codexClient?.dispose()
+    codexClient = null
+    app.exit(1)
+    return
+  }
+
+  dialog.showErrorBox(
+    'Codex Sidecar 数据迁移失败',
+    `Sidecar 未启动，以避免使用不完整的数据。\n\n${message}\n\n原 sidecar.sqlite 和迁移备份均未删除。`
+  )
+  app.quit()
+})
+
+app.on('child-process-gone', (_event, details) => {
+  diagnostics.record('app.childProcessGone', details)
 })
 
 app.on('window-all-closed', () => {
@@ -4695,20 +3145,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-  closeNativeUnreadWatchers()
-
-  if (nativeUnreadRefreshTimer) {
-    clearTimeout(nativeUnreadRefreshTimer)
-  }
-
-  if (hookEventsWatcher) {
-    hookEventsWatcher.close()
-  }
-
-  if (hookEventTimer) {
-    clearTimeout(hookEventTimer)
-  }
-
   if (popupMenuPrewarmTimer) {
     clearTimeout(popupMenuPrewarmTimer)
     popupMenuPrewarmTimer = null
@@ -4716,10 +3152,12 @@ app.on('before-quit', () => {
 
   if (codexClient) {
     codexClient.dispose()
+    codexClient = null
   }
 
-  if (sidecarStore) {
-    sidecarStore.close()
-    sidecarStore = null
+  if (dataEngine) {
+    dataEngine.dispose()
+    dataEngine = null
+    dataEngineStore = null
   }
 })
