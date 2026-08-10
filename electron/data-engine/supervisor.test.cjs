@@ -6,8 +6,11 @@ const { createDataEngineSupervisor } = require('./supervisor.cjs')
 
 const createFakeChild = () => {
   const child = new EventEmitter()
+
   child.messages = []
   child.killed = false
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
   child.postMessage = (message, ports = []) => {
     child.messages.push({ message, ports })
   }
@@ -16,6 +19,77 @@ const createFakeChild = () => {
   }
   return child
 }
+
+test('preserves the engine-reported startup failure when the child exits', async () => {
+  const child = createFakeChild()
+  const supervisor = createDataEngineSupervisor({
+    forkUtility: () => child,
+    entryPath: '/tmp/service.cjs',
+    schedule: () => ({
+      unref() {}
+    }),
+    clearSchedule: () => {}
+  })
+  const started = supervisor.start()
+
+  child.emit('message', {
+    type: 'health',
+    health: {
+      status: 'failed',
+      lastError: "ENOENT: no such file or directory, watch '/tmp/hook-events'"
+    }
+  })
+  child.emit('exit', 1)
+
+  await assert.rejects(started, /ENOENT: no such file or directory/)
+  assert.equal(
+    supervisor.getHealth().lastError,
+    "ENOENT: no such file or directory, watch '/tmp/hook-events'"
+  )
+  assert.equal(supervisor.getHealth().lastFailure.exitCode, 1)
+  supervisor.dispose()
+})
+
+test('uses a bounded stderr tail when a child exits without structured health', async () => {
+  const child = createFakeChild()
+  const supervisor = createDataEngineSupervisor({
+    forkUtility: () => child,
+    entryPath: '/tmp/service.cjs',
+    schedule: () => ({
+      unref() {}
+    }),
+    clearSchedule: () => {}
+  })
+  const started = supervisor.start()
+
+  child.stderr.emit('data', Buffer.from(`${'x'.repeat(20_000)}native loader failure\n`))
+  child.emit('exit', 1)
+
+  await assert.rejects(started, /native loader failure/)
+  assert.ok(supervisor.getHealth().lastFailure.stderr.length <= 16 * 1024)
+  assert.match(supervisor.getHealth().lastFailure.stderr, /native loader failure/)
+  supervisor.dispose()
+})
+
+test('records Electron utility-process fatal error details', async () => {
+  const child = createFakeChild()
+  const supervisor = createDataEngineSupervisor({
+    forkUtility: () => child,
+    entryPath: '/tmp/service.cjs',
+    schedule: () => ({
+      unref() {}
+    }),
+    clearSchedule: () => {}
+  })
+  const started = supervisor.start()
+
+  child.emit('error', 'FatalError', 'node_service.cc:42', 'diagnostic report')
+  child.emit('exit', 1)
+
+  await assert.rejects(started, /FatalError at node_service\.cc:42/)
+  assert.equal(supervisor.getHealth().lastFailure.fatalReport, 'diagnostic report')
+  supervisor.dispose()
+})
 
 test('requests wait for engine readiness and resolve from the correlated response', async () => {
   const child = createFakeChild()

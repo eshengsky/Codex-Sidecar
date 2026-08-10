@@ -71,6 +71,7 @@ test('release workflow builds signed mac dmg and update feed artifacts per archi
   const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'))
   const releaseWorkflow = readOptional(path.join(rootDir, '.github', 'workflows', 'release.yml'))
   const mainProcessSource = fs.readFileSync(path.join(rootDir, 'electron', 'main.cjs'), 'utf8')
+  const smokeHelper = readOptional(path.join(rootDir, 'scripts', 'verify-packaged-data-engine-smoke.sh'))
 
   assert.equal(packageJson.scripts.release, undefined)
   assert.match(mainProcessSource, /auto-update\.cjs/)
@@ -106,9 +107,16 @@ test('release workflow builds signed mac dmg and update feed artifacts per archi
   assert.match(releaseWorkflow, /ditto -x -k "\$ZIP_PATH" "\$ZIP_EXTRACT_DIR"/)
   assert.match(releaseWorkflow, /hdiutil attach -nobrowse -readonly/)
   assert.match(releaseWorkflow, /hdiutil detach/)
-  assert.match(releaseWorkflow, /--sidecar-engine-smoke/)
-  assert.match(releaseWorkflow, /SIDECAR_SMOKE_APP_DATA_PATH/)
-  assert.match(releaseWorkflow, /sidecar-v2\.sqlite/)
+  assert.match(releaseWorkflow, /bash scripts\/verify-packaged-data-engine-smoke\.sh/)
+  assert.doesNotMatch(
+    releaseWorkflow,
+    /- name: Verify packaged DMG, ZIP, and first-launch data engine\n\s+if: github\.ref_type == 'tag'/
+  )
+  assert.match(releaseWorkflow, /if \[\[ "\$GITHUB_REF_TYPE" == "tag" \]\]; then/)
+  assert.match(smokeHelper, /--sidecar-engine-smoke/)
+  assert.match(smokeHelper, /SIDECAR_SMOKE_APP_DATA_PATH/)
+  assert.match(smokeHelper, /diagnostics\/events\.jsonl/)
+  assert.match(smokeHelper, /sidecar-v2\.sqlite/)
   assert.match(mainProcessSource, /--sidecar-engine-smoke/)
   assert.match(mainProcessSource, /SIDECAR_ENGINE_SMOKE/)
   assert.match(

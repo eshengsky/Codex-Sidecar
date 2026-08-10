@@ -124,7 +124,6 @@ jobs:
           spctl --assess --type execute --verbose "$APP_PATH"
 
       - name: Verify packaged DMG, ZIP, and first-launch data engine
-        if: github.ref_type == 'tag'
         run: |
           ZIP_PATH="$(find release -maxdepth 1 -type f -name 'Codex-Sidecar-mac-${{ matrix.arch }}.zip' | head -n 1)"
           DMG_PATH="$(find release -maxdepth 1 -type f -name 'Codex-Sidecar-mac-${{ matrix.arch }}.dmg' | head -n 1)"
@@ -154,25 +153,14 @@ jobs:
             exit 1
           fi
 
-          codesign --verify --deep --strict --verbose=2 "$ZIP_APP"
-          spctl --assess --type execute --verbose "$ZIP_APP"
-
-          SMOKE_OUTPUT="$(
-            SIDECAR_SMOKE_APP_DATA_PATH="$SMOKE_APP_DATA_PATH" \
-              "$ZIP_APP/Contents/MacOS/Codex Sidecar" \
-              --sidecar-engine-smoke
-          )"
-          echo "$SMOKE_OUTPUT"
-
-          if [[ "$SMOKE_OUTPUT" != *'"status":"ready"'* ]]; then
-            echo "Packaged data-engine smoke did not report ready."
-            exit 1
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            codesign --verify --deep --strict --verbose=2 "$ZIP_APP"
+            spctl --assess --type execute --verbose "$ZIP_APP"
           fi
 
-          if [[ ! -f "$SMOKE_APP_DATA_PATH/Codex Sidecar/sidecar-v2.sqlite" ]]; then
-            echo "Packaged data-engine smoke did not create sidecar-v2.sqlite."
-            exit 1
-          fi
+          bash scripts/verify-packaged-data-engine-smoke.sh \
+            "$ZIP_APP/Contents/MacOS/Codex Sidecar" \
+            "$SMOKE_APP_DATA_PATH"
 
           hdiutil attach -nobrowse -readonly -mountpoint "$DMG_MOUNT_DIR" "$DMG_PATH"
           DMG_APP="$(find "$DMG_MOUNT_DIR" -maxdepth 2 -name 'Codex Sidecar.app' -type d | head -n 1)"
@@ -182,8 +170,10 @@ jobs:
             exit 1
           fi
 
-          codesign --verify --deep --strict --verbose=2 "$DMG_APP"
-          spctl --assess --type execute --verbose "$DMG_APP"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            codesign --verify --deep --strict --verbose=2 "$DMG_APP"
+            spctl --assess --type execute --verbose "$DMG_APP"
+          fi
           hdiutil detach "$DMG_MOUNT_DIR"
 
       - name: Show release files

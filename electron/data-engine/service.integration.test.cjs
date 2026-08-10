@@ -221,7 +221,7 @@ const withServiceFixture = async (run, options = {}) => {
       globalStatePath
     },
     createClient: () => client,
-    watchFiles: false,
+    watchFiles: options.watchFiles ?? false,
     maxHookBytes: options.maxHookBytes,
     clock: () => Date.parse('2026-08-05T04:00:00.000Z')
   })
@@ -243,6 +243,24 @@ const withServiceFixture = async (run, options = {}) => {
     })
   }
 }
+
+test('creates the Hook inbox before starting filesystem watchers on first launch', async () => {
+  await withServiceFixture(async ({ hookEventsDir, service }) => {
+    await fsp.rm(hookEventsDir, {
+      recursive: true,
+      force: true
+    })
+
+    const ready = await service.start()
+    const inbox = await fsp.stat(hookEventsDir)
+
+    assert.equal(ready.health.status, 'ready')
+    assert.equal(ready.health.hookWatcher.status, 'ready')
+    assert.equal(inbox.isDirectory(), true)
+  }, {
+    watchFiles: true
+  })
+})
 
 test('starts from a v1 database, imports runtime state and publishes the first projection', async () => {
   await withServiceFixture(async ({ parentPort, service }) => {

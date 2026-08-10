@@ -16,6 +16,7 @@ const {
   createProjectionStore,
   prepareEngineDatabase
 } = require('./projection-store.cjs')
+const { createHookInboxWatcher } = require('./hook-inbox-watcher.cjs')
 const { createTranscriptIndexer } = require('./transcript-indexer.cjs')
 
 const CODEX_REQUEST_METHODS = new Set([
@@ -347,6 +348,8 @@ const createDataEngineService = ({
   let hookTimer = null
   let hookProcessPromise = null
   let hookProcessRequested = false
+  let hookInboxWatcher = null
+  let hookProcessingReady = false
   let databaseMaintenancePromise = null
   let stopped = false
   let engineHealth = {
@@ -680,15 +683,31 @@ const createDataEngineService = ({
     return databaseMaintenancePromise
   }
 
-  const startWatchers = () => {
+  const startHookInboxWatcher = async () => {
     if (!watchFiles) {
       return
     }
 
-    const hookWatcher = fs.watch(paths.hookEventsDir, {
-      persistent: false
-    }, scheduleHookProcessing)
-    watchers.add(hookWatcher)
+    hookInboxWatcher = createHookInboxWatcher({
+      directoryPath: paths.hookEventsDir,
+      onChange: () => {
+        if (hookProcessingReady) {
+          scheduleHookProcessing()
+        }
+      },
+      onStateChange: state => {
+        reportHealth({
+          hookWatcher: state
+        })
+      }
+    })
+    await hookInboxWatcher.start()
+  }
+
+  const startNativeUnreadWatcher = () => {
+    if (!watchFiles) {
+      return
+    }
 
     const globalStateDir = path.dirname(paths.globalStatePath)
     const globalStateName = path.basename(paths.globalStatePath)
@@ -921,10 +940,15 @@ const createDataEngineService = ({
       projectionService.events.on('projection', broadcastProjection)
       parentPort.on('message', handleParentMessage)
 
+      // The data engine owns Hook ingestion. It prepares the inbox and watcher
+      // before app-server work starts, while deferring Hook processing until
+      // the projection service can safely accept recovered events.
+      await startHookInboxWatcher()
       await projectionService.start({
         waitForInitialRefresh: false
       })
-      startWatchers()
+      hookProcessingReady = true
+      startNativeUnreadWatcher()
 
       engineHealth = {
         ...engineHealth,
@@ -972,11 +996,15 @@ const createDataEngineService = ({
     }
 
     stopped = true
+    hookProcessingReady = false
 
     if (hookTimer) {
       clearTimeout(hookTimer)
       hookTimer = null
     }
+
+    hookInboxWatcher?.stop()
+    hookInboxWatcher = null
 
     for (const watcher of watchers) {
       watcher.close()

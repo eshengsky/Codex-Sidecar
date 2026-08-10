@@ -9,6 +9,28 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15000
 const RESTART_DELAYS_MS = [250, 1000, 4000, 15000]
 const RESTART_WINDOW_MS = 60 * 1000
 const RESTART_LIMIT = 5
+const CHILD_OUTPUT_TAIL_BYTES = 16 * 1024
+
+const appendOutputTail = (current, chunk) => {
+  const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+  const combined = Buffer.concat([current, next])
+
+  return combined.length > CHILD_OUTPUT_TAIL_BYTES
+    ? combined.subarray(combined.length - CHILD_OUTPUT_TAIL_BYTES)
+    : combined
+}
+
+const summarizeOutputTail = output => {
+  const normalized = output.trim()
+
+  if (!normalized) {
+    return null
+  }
+
+  // Keep the surfaced Error readable while lastFailure retains the larger tail
+  // for diagnostics. The end normally contains the loader or crash cause.
+  return normalized.slice(-2000)
+}
 
 const createDeferred = () => {
   let resolve
@@ -57,6 +79,7 @@ const createDataEngineSupervisor = ({
     status: 'idle',
     generation: 0,
     lastError: null,
+    lastFailure: null,
     engine: null
   }
 
@@ -158,8 +181,12 @@ const createDataEngineSupervisor = ({
     }
 
     if (message.type === 'health') {
+      const engineHealth = message.health || message.value || null
       setHealth({
-        engine: message.health || message.value || null
+        engine: engineHealth,
+        ...(engineHealth?.status === 'failed' && engineHealth.lastError
+          ? { lastError: engineHealth.lastError }
+          : {})
       })
       return
     }
@@ -177,6 +204,8 @@ const createDataEngineSupervisor = ({
     setHealth({
       status: generation === 1 ? 'starting' : 'restarting',
       generation,
+      lastError: null,
+      lastFailure: null,
       engine: null
     })
 
@@ -189,15 +218,39 @@ const createDataEngineSupervisor = ({
     })
 
     child = currentChild
+    let stdoutTail = Buffer.alloc(0)
+    let stderrTail = Buffer.alloc(0)
+    let fatalFailure = null
+
+    // stdio is piped so packaged failures can be diagnosed. Always consume both
+    // streams: an unread pipe can fill and stall the utility process indefinitely.
+    currentChild.stdout?.on?.('data', chunk => {
+      stdoutTail = appendOutputTail(stdoutTail, chunk)
+    })
+    currentChild.stderr?.on?.('data', chunk => {
+      stderrTail = appendOutputTail(stderrTail, chunk)
+    })
 
     currentChild.on('message', message => {
       handleMessage(currentChild, message)
     })
 
-    currentChild.on('error', error => {
+    currentChild.on('error', (typeOrError, location, report) => {
       if (child === currentChild) {
+        const isErrorObject = typeOrError instanceof Error
+        const type = isErrorObject ? typeOrError.name : String(typeOrError || 'FatalError')
+        const message = isErrorObject
+          ? typeOrError.message
+          : `${type}${location ? ` at ${location}` : ''}`
+
+        fatalFailure = {
+          fatalType: type,
+          fatalLocation: location || null,
+          fatalReport: report || null,
+          message
+        }
         setHealth({
-          lastError: error instanceof Error ? error.message : String(error)
+          lastError: message
         })
       }
     })
@@ -208,7 +261,22 @@ const createDataEngineSupervisor = ({
       }
 
       child = null
-      const error = new Error(`Sidecar data engine exited with code ${code}.`)
+      const stdout = stdoutTail.toString('utf8')
+      const stderr = stderrTail.toString('utf8')
+      const engineError = health.engine?.lastError
+      const message = engineError || fatalFailure?.message || summarizeOutputTail(stderr) ||
+        `Sidecar data engine exited with code ${code}.`
+      const error = new Error(message)
+      const lastFailure = {
+        generation,
+        exitCode: code,
+        message,
+        stdout,
+        stderr,
+        fatalType: fatalFailure?.fatalType || null,
+        fatalLocation: fatalFailure?.fatalLocation || null,
+        fatalReport: fatalFailure?.fatalReport || null
+      }
 
       rejectPending(error)
       ready?.reject(error)
@@ -220,7 +288,8 @@ const createDataEngineSupervisor = ({
       if (exitTimes.length > RESTART_LIMIT) {
         setHealth({
           status: 'failed',
-          lastError: `Sidecar data engine restart limit exceeded (${RESTART_LIMIT} exits in 60 seconds).`,
+          lastError: `Sidecar data engine restart limit exceeded (${RESTART_LIMIT} exits in 60 seconds). Last failure: ${message}`,
+          lastFailure,
           engine: null
         })
         return
@@ -231,6 +300,7 @@ const createDataEngineSupervisor = ({
       setHealth({
         status: 'restarting',
         lastError: error.message,
+        lastFailure,
         engine: null
       })
       restartTimer = schedule(() => {
