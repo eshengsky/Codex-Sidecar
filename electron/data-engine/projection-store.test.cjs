@@ -180,6 +180,39 @@ test('commits a projection and its monotonic revision in one transaction', async
   })
 })
 
+test('normalizes duplicate thread ids before committing a projection', async () => {
+  await withDatabasePaths(async ({ enginePath }) => {
+    const store = createProjectionStore(enginePath)
+
+    try {
+      const committed = store.commitProjection({
+        generatedAt: 100,
+        connection: { connected: true, lastError: null },
+        nativeUnread: { available: true, path: '', count: 0, error: null },
+        rateLimits: null,
+        accountUsage: null,
+        threads: [{
+          id: 'thread-1',
+          title: 'Older duplicate',
+          updatedAt: 100
+        }, {
+          id: 'thread-1',
+          title: 'Newest record',
+          updatedAt: 200
+        }]
+      })
+
+      assert.deepEqual(
+        committed.codexStore.threads.map(thread => [thread.id, thread.title]),
+        [['thread-1', 'Newest record']]
+      )
+      assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM thread_projections').get().count, 1)
+    } finally {
+      store.close()
+    }
+  })
+})
+
 test('retains only the five most recent full projection changes', async () => {
   await withDatabasePaths(async ({ enginePath }) => {
     const store = createProjectionStore(enginePath)

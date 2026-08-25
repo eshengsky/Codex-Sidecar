@@ -199,6 +199,19 @@
           :title="t('app.dataReadFailed')"
           :description="codexStore.error"
         />
+        <UButton
+          v-if="codexStore?.error"
+          class="mt-2 self-start"
+          color="neutral"
+          variant="outline"
+          size="sm"
+          icon="i-lucide-refresh-cw"
+          :loading="codexProjectionRetrying"
+          :disabled="codexProjectionRetrying"
+          @click="retryCodexProjection"
+        >
+          {{ t('common.retry') }}
+        </UButton>
       </section>
 
       <section class="flex min-w-0 items-center gap-1">
@@ -527,6 +540,7 @@ const promptTemplates = ref<PromptTemplate[]>([])
 const bookmarkItems = ref<FavoriteItem[]>([])
 const explorations = ref<ExplorationRun[]>([])
 const loading = ref(false)
+const codexProjectionRetrying = ref(false)
 const exporting = ref(false)
 const importing = ref(false)
 const languageMode = ref<LanguageMode>('auto')
@@ -1219,6 +1233,22 @@ const applyCodexProjection = (projection: CodexProjection) => {
   // app-server/index pass. Keep the existing loading shell until that pass
   // publishes a usable store instead of flashing a misleading empty state.
   loading.value = !hasUsableCodexProjection(projection.codexStore)
+}
+
+const retryCodexProjection = async () => {
+  if (codexProjectionRetrying.value) {
+    return
+  }
+
+  codexProjectionRetrying.value = true
+
+  try {
+    applyCodexProjection(await window.sidecar.refreshCodexProjection())
+  } catch (error) {
+    setFeedback(error instanceof Error ? error.message : String(error))
+  } finally {
+    codexProjectionRetrying.value = false
+  }
 }
 
 const setMode = async (nextMode: WindowMode, options?: { activePanel?: PanelKey }) => {

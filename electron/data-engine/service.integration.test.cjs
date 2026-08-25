@@ -125,7 +125,7 @@ const withServiceFixture = async (run, options = {}) => {
       connected: true,
       lastError: null
     }),
-    request: async method => {
+    request: async (method, params) => {
       if (method === 'thread/list') {
         client.threadListCount += 1
 
@@ -145,6 +145,56 @@ const withServiceFixture = async (run, options = {}) => {
           await new Promise(resolve => {
             releaseSecondThreadList = resolve
           })
+        }
+
+        if (options.overlappingThreadPages) {
+          if (params?.cursor === 'page-2') {
+            return {
+              data: [{
+                id: 'thread-1',
+                sessionId: 'thread-1',
+                name: 'Stale Thread 1',
+                preview: 'Stale duplicate',
+                cwd: directory,
+                createdAt: 1_754_358_400,
+                updatedAt: 1_754_358_300,
+                status: {
+                  type: 'notLoaded'
+                },
+                path: transcriptPath
+              }, {
+                id: 'thread-2',
+                sessionId: 'thread-2',
+                name: 'Thread 2',
+                preview: 'Second thread',
+                cwd: directory,
+                createdAt: 1_754_358_200,
+                updatedAt: 1_754_358_200,
+                status: {
+                  type: 'notLoaded'
+                },
+                path: null
+              }],
+              nextCursor: null
+            }
+          }
+
+          return {
+            data: [{
+              id: 'thread-1',
+              sessionId: 'thread-1',
+              name: 'Thread 1',
+              preview: 'Preview',
+              cwd: directory,
+              createdAt: 1_754_358_400,
+              updatedAt: 1_754_358_400,
+              status: {
+                type: 'notLoaded'
+              },
+              path: transcriptPath
+            }],
+            nextCursor: 'page-2'
+          }
         }
 
         return {
@@ -333,11 +383,46 @@ test('keeps the engine alive and reports degraded health when background startup
     await service.waitForDatabaseMaintenance()
 
     const health = await service.dispatch('engine.health', null)
+    const projection = await service.dispatch('projection.get', null)
 
     assert.equal(health.status, 'degraded')
     assert.match(health.lastError, /fixture app-server unavailable/)
+    assert.deepEqual(projection.codexStore.threads, [])
+    assert.match(projection.codexStore.error, /fixture app-server unavailable/)
   }, {
     rejectFirstThreadList: true
+  })
+})
+
+test('commits one durable thread when adjacent app-server pages overlap', async () => {
+  await withServiceFixture(async ({ engineDbPath, service }) => {
+    await service.start()
+    const projection = await service.waitForInitialRefresh()
+    const health = await service.dispatch('engine.health', null)
+
+    assert.deepEqual(projection.codexStore.threads.map(thread => ({
+      id: thread.id,
+      title: thread.title
+    })), [{
+      id: 'thread-1',
+      title: 'Thread 1'
+    }, {
+      id: 'thread-2',
+      title: 'Thread 2'
+    }])
+    assert.equal(health.status, 'ready')
+
+    const database = new Database(engineDbPath, {
+      readonly: true
+    })
+
+    try {
+      assert.equal(database.prepare('SELECT COUNT(*) AS count FROM thread_projections').get().count, 2)
+    } finally {
+      database.close()
+    }
+  }, {
+    overlappingThreadPages: true
   })
 })
 

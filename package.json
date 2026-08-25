@@ -1,6 +1,6 @@
 {
   "name": "codex-sidecar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT",
   "private": true,
   "description": "A macOS companion panel for monitoring Codex Desktop threads, usage, prompts, and local metadata.",

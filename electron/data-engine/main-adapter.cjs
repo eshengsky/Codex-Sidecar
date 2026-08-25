@@ -10,9 +10,15 @@ const createDataEngineStoreClient = supervisor => ({
   getExplorationRun: runId => supervisor.request('explorations.get', {
     runId
   }),
+  getProjection: () => supervisor.request('projection.get', null),
   getSidecarData: () => supervisor.request('sidecarData.get', null),
   getWindowState: () => supervisor.request('windowState.get', null),
   listExplorationRuns: () => supervisor.request('explorations.list', null),
+  refreshProjection: () => supervisor.request('projection.refresh', null, {
+    // A full projection may need to page through every Codex thread and read
+    // transcripts, so it uses the same bounded timeout as release smoke tests.
+    timeoutMs: 120_000
+  }),
   saveContinuationResult: result => supervisor.request('continuation.save', result),
   saveExplorationRun: run => supervisor.request('explorations.save', run),
   savePromptTemplates: templates => supervisor.request('prompts.save', templates),

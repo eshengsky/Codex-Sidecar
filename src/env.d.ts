@@ -41,6 +41,7 @@ declare global {
   interface Window {
     sidecar: {
       getCodexProjection: () => Promise<CodexProjection>
+      refreshCodexProjection: () => Promise<CodexProjection>
       getSidecarData: () => Promise<SidecarData>
       getHookStatus: (options?: { refresh?: boolean }) => Promise<SidecarHookStatus>
       openCodexSettings: () => Promise<boolean>

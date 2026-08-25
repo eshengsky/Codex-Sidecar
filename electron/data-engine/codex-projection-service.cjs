@@ -3,6 +3,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { normalizeAccountUsageResponse } = require('../account-usage.cjs')
+const { deduplicateThreadsById } = require('./thread-collection.cjs')
 
 const RATE_LIMITS_REFRESH_INTERVAL_MS = 15 * 1000
 const ACCOUNT_USAGE_REFRESH_INTERVAL_MS = 60 * 1000
@@ -192,7 +193,7 @@ const listAllThreads = async client => {
     cursor = response?.nextCursor || null
   } while (cursor)
 
-  return data
+  return deduplicateThreadsById(data)
 }
 
 const getRecentActivity = (thread, latestTurnStatus, sidecarStatus) => {
@@ -581,7 +582,37 @@ const createCodexProjectionService = ({
   }
 
   const performRefresh = async () => {
-    return commitIfChanged(await buildProjection())
+    try {
+      return commitIfChanged(await buildProjection())
+    } catch (error) {
+      const current = store.getProjection().codexStore
+      const message = error instanceof Error ? error.message : String(error)
+
+      // A failed first app-server read still needs to publish a usable shape.
+      // Otherwise the renderer cannot distinguish failure from startup and
+      // leaves users on an indefinite skeleton with no recovery feedback.
+      try {
+        commitIfChanged({
+          generatedAt: clock(),
+          connection: client.getStatus(),
+          nativeUnread: current?.nativeUnread || {
+            available: false,
+            path: '',
+            count: 0,
+            error: null
+          },
+          rateLimits: current?.rateLimits ?? cachedRateLimits ?? null,
+          accountUsage: current?.accountUsage ?? cachedAccountUsage ?? null,
+          threads: current?.threads || [],
+          error: message
+        })
+      } catch {
+        // Preserve the original read failure in health reporting when even the
+        // defensive error projection cannot be persisted.
+      }
+
+      throw error
+    }
   }
 
   const refreshAuxiliaryProjection = async () => {

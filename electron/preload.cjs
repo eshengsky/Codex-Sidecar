@@ -9,6 +9,7 @@ ipcRenderer.on('sidecar:dataPort', (event, metadata = {}) => {
 
 contextBridge.exposeInMainWorld('sidecar', {
   getCodexProjection: () => ipcRenderer.invoke('sidecar:getCodexProjection'),
+  refreshCodexProjection: () => ipcRenderer.invoke('sidecar:refreshCodexProjection'),
   getSidecarData: () => ipcRenderer.invoke('sidecar:getSidecarData'),
   getHookStatus: options => ipcRenderer.invoke('sidecar:getHookStatus', options),
   openCodexSettings: () => ipcRenderer.invoke('sidecar:openCodexSettings'),

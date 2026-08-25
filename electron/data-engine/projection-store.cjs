@@ -4,6 +4,7 @@ const path = require('node:path')
 const Database = require('better-sqlite3')
 
 const { createSidecarStore } = require('../sidecar-store.cjs')
+const { deduplicateThreadsById } = require('./thread-collection.cjs')
 
 const ENGINE_SCHEMA_VERSION = 2
 const CHANGE_LOG_LIMIT = 5
@@ -134,19 +135,23 @@ const createProjectionStore = dbPath => {
       throw new Error('Codex projection threads must be an array.')
     }
 
-    const serializedStore = JSON.stringify(codexStore)
+    const normalizedStore = {
+      ...codexStore,
+      threads: deduplicateThreadsById(codexStore.threads)
+    }
+    const serializedStore = JSON.stringify(normalizedStore)
     const currentRevision = Number(readMeta('projectionRevision')) || 0
     const revision = currentRevision + 1
     const projection = {
       revision,
-      codexStore
+      codexStore: normalizedStore
     }
     const serializedProjection = JSON.stringify(projection)
     const committedAt = Date.now()
     const commit = db.transaction(() => {
       db.prepare('DELETE FROM thread_projections').run()
 
-      for (const thread of codexStore.threads) {
+      for (const thread of normalizedStore.threads) {
         if (!thread || typeof thread.id !== 'string' || !thread.id) {
           continue
         }

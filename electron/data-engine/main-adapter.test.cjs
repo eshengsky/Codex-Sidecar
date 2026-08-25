@@ -40,6 +40,8 @@ test('maps Sidecar persistence methods to bounded engine operations', async () =
   const store = createDataEngineStoreClient(supervisor)
 
   await store.getSidecarData()
+  await store.getProjection()
+  await store.refreshProjection()
   await store.updateSettings({
     themeMode: 'dark'
   })
@@ -58,6 +60,14 @@ test('maps Sidecar persistence methods to bounded engine operations', async () =
   })), [
     {
       operation: 'sidecarData.get',
+      payload: null
+    },
+    {
+      operation: 'projection.get',
+      payload: null
+    },
+    {
+      operation: 'projection.refresh',
       payload: null
     },
     {
@@ -84,6 +94,9 @@ test('maps Sidecar persistence methods to bounded engine operations', async () =
       }
     }
   ])
+  assert.deepEqual(supervisor.calls[2].options, {
+    timeoutMs: 120_000
+  })
 })
 
 test('Codex proxy delegates requests and forwards engine notifications', async () => {

@@ -254,6 +254,94 @@ test('keeps a Hook-derived running thread visible when thread/list is notLoaded'
   service.dispose()
 })
 
+test('deduplicates overlapping thread pages and keeps the newest record', async () => {
+  const store = createMemoryStore()
+  const { service } = createService({
+    store,
+    requestHandler: async (method, params) => {
+      if (method === 'thread/list') {
+        return params.cursor
+          ? {
+              data: [
+                createThread({
+                  id: 'thread-1',
+                  name: 'Older duplicate',
+                  updatedAt: 1_754_358_300
+                }),
+                createThread({
+                  id: 'thread-2',
+                  sessionId: 'thread-2',
+                  name: 'Second thread',
+                  path: '/tmp/thread-2.jsonl'
+                })
+              ],
+              nextCursor: null
+            }
+          : {
+              data: [createThread({
+                id: 'thread-1',
+                name: 'Newest record',
+                updatedAt: 1_754_358_500
+              })],
+              nextCursor: 'page-2'
+            }
+      }
+
+      if (method === 'account/rateLimits/read') {
+        return { rateLimits: null }
+      }
+
+      if (method === 'account/usage/read') {
+        return {
+          summary: {
+            lifetimeTokens: 0,
+            peakDailyTokens: 0,
+            longestRunningTurnSec: 0,
+            currentStreakDays: 0,
+            longestStreakDays: 0
+          },
+          dailyUsageBuckets: []
+        }
+      }
+
+      throw new Error(`Unexpected method: ${method}`)
+    }
+  })
+
+  await service.refresh('test')
+
+  assert.deepEqual(
+    service.getProjection().codexStore.threads.map(thread => [thread.id, thread.title]),
+    [
+      ['thread-1', 'Newest record'],
+      ['thread-2', 'Second thread']
+    ]
+  )
+  service.dispose()
+})
+
+test('publishes an error projection when the initial Codex refresh fails', async () => {
+  const store = createMemoryStore()
+  const { service } = createService({
+    store,
+    connectHandler: async () => {
+      throw new Error('fixture app-server unavailable')
+    }
+  })
+  const projections = []
+
+  service.events.on('projection', projection => {
+    projections.push(projection)
+  })
+
+  await assert.rejects(service.refresh('test'), /fixture app-server unavailable/)
+
+  assert.equal(service.getProjection().codexStore.error, 'fixture app-server unavailable')
+  assert.deepEqual(service.getProjection().codexStore.threads, [])
+  assert.equal(projections.length, 1)
+  service.dispose()
+})
+
 test('a matching transcript terminal fact clears stale Hook runtime', async () => {
   const store = createMemoryStore({
     runtimeSignals: {

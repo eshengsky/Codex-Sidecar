@@ -2645,7 +2645,16 @@ const createExplorationRun = async request => {
 }
 
 ipcMain.handle('sidecar:getCodexProjection', async () => {
-  const projection = await dataEngine.request('projection.get', null)
+  const projection = await getSidecarStore().getProjection()
+
+  return {
+    ...projection,
+    generation: dataEngine.getGeneration()
+  }
+})
+
+ipcMain.handle('sidecar:refreshCodexProjection', async () => {
+  const projection = await getSidecarStore().refreshProjection()
 
   return {
     ...projection,
