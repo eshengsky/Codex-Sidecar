@@ -78,7 +78,7 @@ const withServiceFixture = async (run, options = {}) => {
       last_agent_message: 'done'
     }
   })}\n`)
-  await fsp.writeFile(globalStatePath, `${JSON.stringify({
+  await fsp.writeFile(globalStatePath, `${JSON.stringify(options.globalState || {
     'electron-persisted-atom-state': {
       'unread-thread-ids-by-host-v1': {
         local: []
@@ -126,6 +126,10 @@ const withServiceFixture = async (run, options = {}) => {
       lastError: null
     }),
     request: async (method, params) => {
+      if (method === 'getAuthStatus') {
+        assert.deepEqual(params, { includeToken: true, refreshToken: false })
+        return options.authStatus
+      }
       if (method === 'thread/list') {
         client.threadListCount += 1
 
@@ -293,6 +297,31 @@ const withServiceFixture = async (run, options = {}) => {
     })
   }
 }
+
+test('projects new-format native unread into completedUnread', async () => {
+  await withServiceFixture(async ({ service }) => {
+    await service.start()
+    const projection = await service.waitForInitialRefresh()
+    assert.equal(projection.codexStore.nativeUnread.available, true)
+    assert.equal(projection.codexStore.nativeUnread.count, 1)
+    const thread = projection.codexStore.threads[0]
+    assert.equal(thread.unread, true)
+    assert.equal(thread.completedUnread, true)
+    assert.equal(thread.sidecarStatus, 'completedUnread')
+  }, {
+    authStatus: { authMethod: 'apikey' },
+    globalState: {
+      'electron-thread-read-state-v1': {
+        version: 1,
+        unreadByIdentity: {
+          c686e456d662546cebd275b7e7585cb7a5fd63727586af1927a45d2e1e18364e: {
+            'local:092af2cb59bdd804c6f7f1cd1d85464b682974e43cd517397d25510024034d1c': ['thread-1']
+          }
+        }
+      }
+    }
+  })
+})
 
 test('creates the Hook inbox before starting filesystem watchers on first launch', async () => {
   await withServiceFixture(async ({ hookEventsDir, service }) => {

@@ -487,7 +487,7 @@ const createCodexProjectionService = ({
     const runtimeSignals = reconcileTerminalRuntime(threads)
     await refreshAuxiliary()
 
-    const nativeUnread = readNativeUnread()
+    const nativeUnread = await readNativeUnread()
     const unreadSet = new Set(nativeUnread?.available && Array.isArray(nativeUnread.ids) ? nativeUnread.ids : [])
     const contextUsageByThread = store.getContextUsageByThread()
     const summaries = threads.map(thread => {

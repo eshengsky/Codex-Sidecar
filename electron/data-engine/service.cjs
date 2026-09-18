@@ -1,4 +1,5 @@
 const { spawn, spawnSync } = require('node:child_process')
+const { createHash } = require('node:crypto')
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
@@ -72,10 +73,52 @@ const resolveCodexExecutable = () => {
     : 'codex'
 }
 
-const readNativeUnreadFromPath = statePath => {
+const hashUnreadKey = parts => createHash('sha256').update(JSON.stringify(parts)).digest('hex')
+
+const unreadIdentityKey = auth => {
+  if (auth?.authMethod === 'chatgpt' || auth?.authMethod === 'chatgptAuthTokens') {
+    // Codex scopes read state by both account and user, not email. Decode only
+    // the principal claims returned by the local server; never persist the token.
+    try {
+      const claims = JSON.parse(Buffer.from(auth.authToken.split('.')[1], 'base64url').toString('utf8'))
+      const principal = claims['https://api.openai.com/auth']
+      const accountId = principal?.chatgpt_account_id ?? principal?.account_id
+      const userId = principal?.user_id ?? principal?.chatgpt_user_id
+      if (typeof accountId === 'string' && accountId && typeof userId === 'string' && userId) {
+        return hashUnreadKey(['chatgpt', accountId, userId])
+      }
+    } catch {
+      // Keep token fragments out of JSON parse errors exposed in diagnostics.
+    }
+    throw new Error('Native unread identity is unavailable')
+  }
+  if (!auth || (auth.authMethod == null && auth.requiresOpenaiAuth !== false)) {
+    throw new Error('Native unread identity is unavailable')
+  }
+  return hashUnreadKey(['execution-storage', auth.authMethod ?? 'none'])
+}
+
+const readNativeUnreadFromPath = async (statePath, getAuthStatus) => {
   try {
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
-    const ids = state?.['electron-persisted-atom-state']?.['unread-thread-ids-by-host-v1']?.local
+    let state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+    let ids
+    if (Object.hasOwn(state, 'electron-thread-read-state-v1')) {
+      const identityKey = unreadIdentityKey(await getAuthStatus())
+      // Read again after the async auth request so a concurrent mark-as-read is
+      // not replaced with the file contents from before that request.
+      state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+      const readState = state['electron-thread-read-state-v1']
+      if (readState?.version !== 1 || !readState.unreadByIdentity ||
+          typeof readState.unreadByIdentity !== 'object' || Array.isArray(readState.unreadByIdentity)) {
+        throw new Error('Invalid electron-thread-read-state-v1')
+      }
+      // Sidecar connects to the local stdio server. Codex hashes [kind, id,
+      // websocket URL]; selecting all local:* keys would mix execution hosts.
+      const hostKey = `local:${hashUnreadKey(['local', 'local', null])}`
+      ids = readState.unreadByIdentity[identityKey]?.[hostKey] ?? []
+    } else {
+      ids = state?.['electron-persisted-atom-state']?.['unread-thread-ids-by-host-v1']?.local
+    }
 
     if (!Array.isArray(ids)) {
       return {
@@ -83,7 +126,7 @@ const readNativeUnreadFromPath = statePath => {
         path: statePath,
         count: 0,
         ids: [],
-        error: 'missing unread-thread-ids-by-host-v1.local'
+        error: 'Native unread thread IDs are missing or invalid'
       }
     }
 
@@ -934,7 +977,8 @@ const createDataEngineService = ({
         client,
         store,
         indexer: createTranscriptIndexer(),
-        readNativeUnread: () => readNativeUnreadFromPath(paths.globalStatePath),
+        readNativeUnread: () => readNativeUnreadFromPath(paths.globalStatePath, () =>
+          client.request('getAuthStatus', { includeToken: true, refreshToken: false }, 5000)),
         clock
       })
       projectionService.events.on('projection', broadcastProjection)
